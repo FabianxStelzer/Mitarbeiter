@@ -112,3 +112,7 @@ Wenn Änderungen nicht sichtbar sind:
 3. Version prüfen: `http://localhost:8080/api/version`
 
 Die JSON-Antwort muss den aktuellen Commit zeigen (z. B. `131cc0e` oder neuer).
+
+Falls im Terminal `EADDRINUSE: address already in use :::8080` erscheint:
+
+- `npm run dev:fresh` nutzen (beendet alte Next-Prozesse und startet sauber neu).
