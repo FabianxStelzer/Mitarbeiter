@@ -66,6 +66,7 @@ export async function GET(request: Request) {
       id: entry.candidate.id,
       firstName: entry.candidate.firstName,
       lastName: entry.candidate.lastName,
+      avatarUrl: entry.candidate.avatarUrl,
       location: entry.candidate.location,
       headline: entry.candidate.headline,
       summary: entry.candidate.summary,

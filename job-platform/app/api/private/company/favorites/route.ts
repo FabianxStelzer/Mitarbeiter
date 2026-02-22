@@ -40,6 +40,7 @@ export async function GET() {
       id: favorite.id,
       candidateId: favorite.candidate.id,
       name: `${favorite.candidate.firstName} ${favorite.candidate.lastName}`,
+      avatarUrl: favorite.candidate.avatarUrl,
       headline: favorite.candidate.headline,
       location: favorite.candidate.location,
       experienceYears: favorite.candidate.experienceYears,

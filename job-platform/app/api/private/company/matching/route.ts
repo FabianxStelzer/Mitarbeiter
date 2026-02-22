@@ -33,6 +33,7 @@ export async function GET() {
     .map((entry) => ({
       candidateId: entry.candidate.id,
       name: `${entry.candidate.firstName} ${entry.candidate.lastName}`,
+      avatarUrl: entry.candidate.avatarUrl,
       headline: entry.candidate.headline,
       location: entry.candidate.location,
       experienceYears: entry.candidate.experienceYears,

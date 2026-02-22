@@ -24,6 +24,7 @@ Moderne Webplattform für:
   - Fähigkeiten
   - Zertifikaten
   - Portfolio (inkl. Dateiupload)
+  - Profilbild (Bild-Upload)
   - Gehaltsvorstellungen
   - Verfügbarkeit
 - Privatsphäre:
@@ -34,8 +35,9 @@ Moderne Webplattform für:
   - aktiv suchend
   - offen für Angebote
   - unsichtbar
-- Matching zu Jobpostings inkl. Score
-- Verwaltung eingehender Kontaktanfragen
+- Übersicht aller aktuell offenen Stellen von Unternehmen
+- Bewerbungs-Board (Beworben, Eingeladen, Interviews, Eingestellt, Abgelehnt)
+- Nachrichten direkt in der Plattform (kein Austausch von E-Mail/Telefon nötig)
 
 ### Unternehmen
 
@@ -49,9 +51,15 @@ Moderne Webplattform für:
   - Freitext
 - Favoritenliste
 - Kandidatenvergleich
-- Kontaktanfragen direkt über die Plattform
+- Nachrichten direkt über die Plattform
 - Jobposting-Verwaltung
 - Matching-Vorschläge für Kandidaten
+- Bewerbungs-Kanban mit Drag-and-drop:
+  - Beworben
+  - Eingeladen
+  - Interviews
+  - Eingestellt
+  - Abgelehnt
 
 ### DSGVO & Sicherheit
 

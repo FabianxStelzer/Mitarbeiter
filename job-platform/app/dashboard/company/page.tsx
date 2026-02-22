@@ -2,16 +2,14 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
+import {
+  APPLICATION_STAGES,
+  APPLICATION_STAGE_LABELS,
+  type ApplicationStageValue,
+} from "@/lib/applications";
 
-type ContactStatusValue = "PENDING" | "ACCEPTED" | "DECLINED";
-
-const VERIFICATION_STATUS = {
-  UNVERIFIED: "UNVERIFIED",
-  PENDING: "PENDING",
-  VERIFIED: "VERIFIED",
-} as const;
-
-type VerificationStatusValue = (typeof VERIFICATION_STATUS)[keyof typeof VERIFICATION_STATUS];
+type CompanyTab = "jobs" | "candidates" | "applications" | "messages" | "profile";
+type VerificationStatusValue = "UNVERIFIED" | "PENDING" | "VERIFIED";
 
 type CompanyProfile = {
   id: string;
@@ -46,6 +44,7 @@ type CandidateSearchResult = {
   id: string;
   firstName: string;
   lastName: string;
+  avatarUrl: string | null;
   location: string | null;
   headline: string | null;
   summary: string | null;
@@ -60,48 +59,54 @@ type CandidateSearchResult = {
   isFavorite: boolean;
 };
 
-type CompanyFavorite = {
+type CompanyApplication = {
   id: string;
-  candidateId: string;
-  name: string;
-  headline: string | null;
-  location: string | null;
-  experienceYears: number;
-  skills: string[];
-};
-
-type CompanyMatch = {
-  candidateId: string;
-  name: string;
-  headline: string | null;
-  location: string | null;
-  experienceYears: number;
-  skills: string[];
-  score: number;
-};
-
-type CompanyContact = {
-  id: string;
-  candidateName: string;
-  message: string;
-  status: ContactStatusValue;
+  stage: ApplicationStageValue;
   createdAt: string;
-  jobTitle: string | null;
+  updatedAt: string;
+  candidateId: string;
+  candidateName: string;
+  candidateAvatarUrl: string | null;
+  candidateHeadline: string | null;
+  candidateLocation: string | null;
+  jobId: string;
+  jobTitle: string;
+  threadId: string | null;
 };
 
-type CompareCandidate = {
+type MessageThreadListEntry = {
   id: string;
-  name: string;
-  headline: string | null;
-  location: string | null;
-  experienceYears: number;
-  salaryMin: number | null;
-  salaryMax: number | null;
-  currency: string;
-  availabilityNote: string | null;
-  skills: string[];
-  summary: string | null;
-  score: number;
+  applicationId: string | null;
+  jobTitle: string | null;
+  company: { id: string; name: string };
+  candidate: { id: string; name: string; avatarUrl: string | null };
+  latestMessage: {
+    id: string;
+    content: string;
+    senderRole: "CANDIDATE" | "COMPANY";
+    createdAt: string;
+  } | null;
+  unreadCount: number;
+  updatedAt: string;
+};
+
+type ThreadMessage = {
+  id: string;
+  senderRole: "CANDIDATE" | "COMPANY";
+  content: string;
+  createdAt: string;
+  readAt: string | null;
+};
+
+type ThreadResponse = {
+  thread: {
+    id: string;
+    applicationId: string | null;
+    jobTitle: string | null;
+    company: { id: string; name: string };
+    candidate: { id: string; name: string; avatarUrl: string | null };
+  };
+  messages: ThreadMessage[];
 };
 
 function parseLines(value: string) {
@@ -119,14 +124,17 @@ function formatMoney(min: number | null, max: number | null, currency: string) {
 }
 
 export default function CompanyDashboardPage() {
+  const [activeTab, setActiveTab] = useState<CompanyTab>("applications");
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
   const [jobs, setJobs] = useState<JobPosting[]>([]);
-  const [searchResults, setSearchResults] = useState<CandidateSearchResult[]>([]);
-  const [favorites, setFavorites] = useState<CompanyFavorite[]>([]);
-  const [matching, setMatching] = useState<CompanyMatch[]>([]);
-  const [contacts, setContacts] = useState<CompanyContact[]>([]);
-  const [compareIds, setCompareIds] = useState<string[]>([]);
-  const [compareResults, setCompareResults] = useState<CompareCandidate[]>([]);
+  const [candidates, setCandidates] = useState<CandidateSearchResult[]>([]);
+  const [applications, setApplications] = useState<CompanyApplication[]>([]);
+  const [threads, setThreads] = useState<MessageThreadListEntry[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [messageText, setMessageText] = useState("");
+  const [candidateMessageDrafts, setCandidateMessageDrafts] = useState<Record<string, string>>({});
+  const [draggedApplicationId, setDraggedApplicationId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [savingProfile, setSavingProfile] = useState(false);
@@ -138,12 +146,6 @@ export default function CompanyDashboardPage() {
   const [searchLocation, setSearchLocation] = useState("");
   const [searchSkills, setSearchSkills] = useState("");
   const [searchMinExperience, setSearchMinExperience] = useState("");
-  const [searchMinSalary, setSearchMinSalary] = useState("");
-  const [searchMaxSalary, setSearchMaxSalary] = useState("");
-  const [searchAvailability, setSearchAvailability] = useState("");
-
-  const [contactDrafts, setContactDrafts] = useState<Record<string, string>>({});
-  const [contactJobSelection, setContactJobSelection] = useState<Record<string, string>>({});
 
   const [newJobTitle, setNewJobTitle] = useState("");
   const [newJobDescription, setNewJobDescription] = useState("");
@@ -157,17 +159,40 @@ export default function CompanyDashboardPage() {
   const [newJobPreferredSkills, setNewJobPreferredSkills] = useState("");
   const [newJobAvailability, setNewJobAvailability] = useState("");
 
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
+    [threads, activeThreadId],
+  );
+
+  const groupedApplications = useMemo(
+    () =>
+      APPLICATION_STAGES.reduce<Record<ApplicationStageValue, CompanyApplication[]>>(
+        (acc, stage) => {
+          acc[stage] = applications.filter((application) => application.stage === stage);
+          return acc;
+        },
+        {
+          APPLIED: [],
+          INVITED: [],
+          INTERVIEWS: [],
+          HIRED: [],
+          REJECTED: [],
+        },
+      ),
+    [applications],
+  );
+
   useEffect(() => {
-    async function loadData() {
+    async function loadInitialData() {
       setLoading(true);
       setError(null);
       try {
-        const [profileRes, jobsRes, favoritesRes, matchingRes, contactsRes] = await Promise.all([
+        const [profileRes, jobsRes, candidatesRes, applicationsRes, threadsRes] = await Promise.all([
           fetch("/api/private/company/profile"),
           fetch("/api/private/company/jobs"),
-          fetch("/api/private/company/favorites"),
-          fetch("/api/private/company/matching"),
-          fetch("/api/private/company/contact-requests"),
+          fetch("/api/private/company/candidates"),
+          fetch("/api/private/company/applications"),
+          fetch("/api/private/messages"),
         ]);
 
         if (!profileRes.ok) {
@@ -182,27 +207,22 @@ export default function CompanyDashboardPage() {
           setJobs(jobsData.jobs ?? []);
         }
 
-        if (favoritesRes.ok) {
-          const favoritesData = (await favoritesRes.json()) as { favorites: CompanyFavorite[] };
-          setFavorites(favoritesData.favorites ?? []);
+        if (candidatesRes.ok) {
+          const candidateData = (await candidatesRes.json()) as { results: CandidateSearchResult[] };
+          setCandidates(candidateData.results ?? []);
         }
 
-        if (matchingRes.ok) {
-          const matchingData = (await matchingRes.json()) as { matches: CompanyMatch[] };
-          setMatching(matchingData.matches ?? []);
+        if (applicationsRes.ok) {
+          const appData = (await applicationsRes.json()) as { applications: CompanyApplication[] };
+          setApplications(appData.applications ?? []);
         }
 
-        if (contactsRes.ok) {
-          const contactsData = (await contactsRes.json()) as { requests: CompanyContact[] };
-          setContacts(contactsData.requests ?? []);
-        }
-
-        const initialSearchResponse = await fetch("/api/private/company/candidates");
-        if (initialSearchResponse.ok) {
-          const initialSearchData = (await initialSearchResponse.json()) as {
-            results: CandidateSearchResult[];
-          };
-          setSearchResults(initialSearchData.results ?? []);
+        if (threadsRes.ok) {
+          const threadData = (await threadsRes.json()) as { threads: MessageThreadListEntry[] };
+          setThreads(threadData.threads ?? []);
+          if (threadData.threads.length) {
+            setActiveThreadId(threadData.threads[0].id);
+          }
         }
       } catch (loadError) {
         console.error(loadError);
@@ -212,77 +232,70 @@ export default function CompanyDashboardPage() {
       }
     }
 
-    loadData();
+    loadInitialData();
   }, []);
 
   useEffect(() => {
-    async function loadCompare() {
-      if (!compareIds.length) {
-        setCompareResults([]);
+    async function loadThread() {
+      if (!activeThreadId) {
+        setThreadMessages([]);
         return;
       }
 
-      const response = await fetch(`/api/private/company/compare?ids=${compareIds.join(",")}`);
+      const response = await fetch(`/api/private/messages/${activeThreadId}`);
       if (!response.ok) {
         return;
       }
-
-      const data = (await response.json()) as { candidates: CompareCandidate[] };
-      setCompareResults(data.candidates ?? []);
+      const data = (await response.json()) as ThreadResponse;
+      setThreadMessages(data.messages ?? []);
     }
 
-    loadCompare();
-  }, [compareIds]);
+    loadThread();
+  }, [activeThreadId]);
 
-  const activeJobs = useMemo(() => jobs.filter((job) => job.active), [jobs]);
-
-  async function reloadSupportData() {
-    const [jobsRes, favoritesRes, matchingRes, contactsRes] = await Promise.all([
+  async function refreshCompanyData() {
+    const [jobsRes, candidatesRes, applicationsRes, threadsRes] = await Promise.all([
       fetch("/api/private/company/jobs"),
-      fetch("/api/private/company/favorites"),
-      fetch("/api/private/company/matching"),
-      fetch("/api/private/company/contact-requests"),
+      fetch("/api/private/company/candidates"),
+      fetch("/api/private/company/applications"),
+      fetch("/api/private/messages"),
     ]);
 
     if (jobsRes.ok) {
       const jobsData = (await jobsRes.json()) as { jobs: JobPosting[] };
       setJobs(jobsData.jobs ?? []);
     }
-
-    if (favoritesRes.ok) {
-      const favoritesData = (await favoritesRes.json()) as { favorites: CompanyFavorite[] };
-      setFavorites(favoritesData.favorites ?? []);
+    if (candidatesRes.ok) {
+      const candidateData = (await candidatesRes.json()) as { results: CandidateSearchResult[] };
+      setCandidates(candidateData.results ?? []);
     }
-
-    if (matchingRes.ok) {
-      const matchingData = (await matchingRes.json()) as { matches: CompanyMatch[] };
-      setMatching(matchingData.matches ?? []);
+    if (applicationsRes.ok) {
+      const appData = (await applicationsRes.json()) as { applications: CompanyApplication[] };
+      setApplications(appData.applications ?? []);
     }
-
-    if (contactsRes.ok) {
-      const contactsData = (await contactsRes.json()) as { requests: CompanyContact[] };
-      setContacts(contactsData.requests ?? []);
+    if (threadsRes.ok) {
+      const threadData = (await threadsRes.json()) as { threads: MessageThreadListEntry[] };
+      setThreads(threadData.threads ?? []);
+      if (activeThreadId && !threadData.threads.some((thread) => thread.id === activeThreadId)) {
+        setActiveThreadId(threadData.threads[0]?.id ?? null);
+      }
     }
   }
 
-  async function runSearch(event?: FormEvent) {
+  async function runCandidateSearch(event?: FormEvent) {
     event?.preventDefault();
     const params = new URLSearchParams();
     if (searchQuery.trim()) params.set("query", searchQuery.trim());
     if (searchLocation.trim()) params.set("location", searchLocation.trim());
     if (searchSkills.trim()) params.set("skills", parseLines(searchSkills).join(","));
-    if (searchMinExperience) params.set("minExperienceYears", searchMinExperience);
-    if (searchMinSalary) params.set("minSalary", searchMinSalary);
-    if (searchMaxSalary) params.set("maxSalary", searchMaxSalary);
-    if (searchAvailability.trim()) params.set("availability", searchAvailability.trim());
+    if (searchMinExperience.trim()) params.set("minExperienceYears", searchMinExperience.trim());
 
     const response = await fetch(`/api/private/company/candidates?${params.toString()}`);
     if (!response.ok) {
       return;
     }
-
     const data = (await response.json()) as { results: CandidateSearchResult[] };
-    setSearchResults(data.results ?? []);
+    setCandidates(data.results ?? []);
   }
 
   async function saveProfile(requestVerification: boolean) {
@@ -291,8 +304,8 @@ export default function CompanyDashboardPage() {
     }
 
     setSavingProfile(true);
-    setSuccess(null);
     setError(null);
+    setSuccess(null);
 
     const response = await fetch("/api/private/company/profile", {
       method: "PUT",
@@ -320,7 +333,7 @@ export default function CompanyDashboardPage() {
     setProfile(data.profile);
     setSuccess(
       requestVerification
-        ? "Profil gespeichert und Verifizierungsanfrage gestellt."
+        ? "Profil gespeichert und Verifizierungsanfrage gesendet."
         : "Unternehmensprofil gespeichert.",
     );
     setSavingProfile(false);
@@ -329,8 +342,8 @@ export default function CompanyDashboardPage() {
   async function createJob(event: FormEvent) {
     event.preventDefault();
     setSavingJob(true);
-    setSuccess(null);
     setError(null);
+    setSuccess(null);
 
     const response = await fetch("/api/private/company/jobs", {
       method: "POST",
@@ -369,22 +382,13 @@ export default function CompanyDashboardPage() {
     setNewJobPreferredSkills("");
     setNewJobAvailability("");
 
-    await reloadSupportData();
-    await runSearch();
-    setSuccess("Stelle wurde erfolgreich angelegt.");
+    await refreshCompanyData();
+    setSuccess("Stelle veröffentlicht.");
     setSavingJob(false);
   }
 
-  async function deleteJob(jobId: string) {
-    const response = await fetch(`/api/private/company/jobs/${jobId}`, { method: "DELETE" });
-    if (response.ok) {
-      await reloadSupportData();
-      await runSearch();
-    }
-  }
-
   async function toggleJobActive(job: JobPosting) {
-    const response = await fetch(`/api/private/company/jobs/${job.id}`, {
+    await fetch(`/api/private/company/jobs/${job.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -394,66 +398,85 @@ export default function CompanyDashboardPage() {
         active: !job.active,
       }),
     });
-
-    if (response.ok) {
-      await reloadSupportData();
-      await runSearch();
-    }
+    await refreshCompanyData();
   }
 
-  async function toggleFavorite(candidate: CandidateSearchResult) {
-    const method = candidate.isFavorite ? "DELETE" : "POST";
-    const response = await fetch("/api/private/company/favorites", {
-      method,
+  async function deleteJob(jobId: string) {
+    await fetch(`/api/private/company/jobs/${jobId}`, { method: "DELETE" });
+    await refreshCompanyData();
+  }
+
+  async function moveApplicationToStage(applicationId: string, stage: ApplicationStageValue) {
+    const response = await fetch("/api/private/company/applications", {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ candidateProfileId: candidate.id }),
+      body: JSON.stringify({ applicationId, stage }),
     });
 
-    if (response.ok) {
-      await runSearch();
-      await reloadSupportData();
+    if (!response.ok) {
+      setError("Bewerbungsstatus konnte nicht aktualisiert werden.");
+      return;
     }
+    await refreshCompanyData();
   }
 
-  async function sendContactRequest(candidateId: string) {
-    const message = contactDrafts[candidateId]?.trim();
-    if (!message || message.length < 10) {
-      setError("Bitte gib eine aussagekräftige Nachricht mit mindestens 10 Zeichen ein.");
+  async function sendMessageToCandidate(candidateId: string) {
+    const draft = candidateMessageDrafts[candidateId]?.trim();
+    if (!draft) {
+      setError("Bitte gib zuerst eine Nachricht ein.");
       return;
     }
 
-    const response = await fetch("/api/private/company/contact-requests", {
+    const response = await fetch("/api/private/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         candidateProfileId: candidateId,
-        message,
-        jobPostingId: contactJobSelection[candidateId] || undefined,
+        content: draft,
       }),
     });
 
     if (!response.ok) {
-      setError("Kontaktanfrage konnte nicht gesendet werden.");
+      setError("Nachricht konnte nicht gesendet werden.");
       return;
     }
 
-    setContactDrafts((current) => ({ ...current, [candidateId]: "" }));
-    setContactJobSelection((current) => ({ ...current, [candidateId]: "" }));
-    setSuccess("Kontaktanfrage wurde gesendet.");
-    await reloadSupportData();
+    const data = await response.json();
+    setCandidateMessageDrafts((current) => ({ ...current, [candidateId]: "" }));
+    await refreshCompanyData();
+    if (data.threadId) {
+      setActiveThreadId(data.threadId);
+      setActiveTab("messages");
+    }
   }
 
-  function toggleCompare(candidateId: string) {
-    setCompareIds((current) => {
-      if (current.includes(candidateId)) {
-        return current.filter((id) => id !== candidateId);
-      }
+  async function sendMessageInThread(event: FormEvent) {
+    event.preventDefault();
+    if (!activeThreadId || !messageText.trim()) {
+      return;
+    }
 
-      if (current.length >= 5) {
-        return current;
-      }
-      return [...current, candidateId];
+    const response = await fetch("/api/private/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        threadId: activeThreadId,
+        content: messageText.trim(),
+      }),
     });
+
+    if (!response.ok) {
+      setError("Nachricht konnte nicht gesendet werden.");
+      return;
+    }
+
+    setMessageText("");
+    const threadRes = await fetch(`/api/private/messages/${activeThreadId}`);
+    if (threadRes.ok) {
+      const threadData = (await threadRes.json()) as ThreadResponse;
+      setThreadMessages(threadData.messages ?? []);
+    }
+    await refreshCompanyData();
   }
 
   async function exportData() {
@@ -464,7 +487,6 @@ export default function CompanyDashboardPage() {
     const confirmed = window.confirm(
       "Möchtest du das Unternehmenskonto wirklich dauerhaft löschen? Diese Aktion kann nicht rückgängig gemacht werden.",
     );
-
     if (!confirmed) {
       return;
     }
@@ -477,7 +499,7 @@ export default function CompanyDashboardPage() {
 
   if (loading) {
     return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p className="text-sm text-zinc-600">Dashboard wird geladen...</p>
       </main>
     );
@@ -485,7 +507,7 @@ export default function CompanyDashboardPage() {
 
   if (!profile) {
     return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           Unternehmensprofil konnte nicht geladen werden.
         </p>
@@ -494,93 +516,517 @@ export default function CompanyDashboardPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-8">
-      <section className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200 md:p-6">
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <section className="rounded-3xl bg-gradient-to-br from-indigo-900 via-zinc-900 to-zinc-800 p-6 text-white shadow-lg">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Unternehmens-Dashboard</h1>
-            <p className="mt-1 text-sm text-zinc-600">
-              Suche Kandidaten, verwalte Stellen und nutze Matching- sowie Vergleichsfunktionen.
+            <p className="text-xs uppercase tracking-[0.2em] text-indigo-200">Unternehmen</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">
+              Recruiting Hub: {profile.companyName}
+            </h1>
+            <p className="mt-2 text-sm text-zinc-200">
+              Moderne Pipeline mit Kanban-Bewerbungen und direkter Plattform-Kommunikation.
             </p>
           </div>
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2 text-sm">
-            Verifizierungsstatus: <strong>{profile.verificationStatus}</strong>
+          <div className="rounded-2xl bg-white/10 px-4 py-3 text-sm backdrop-blur">
+            Verifizierung: <strong>{profile.verificationStatus}</strong>
           </div>
         </div>
       </section>
 
-      <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-        <h2 className="text-lg font-semibold">Unternehmensprofil</h2>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Unternehmensname
-            </span>
+      <section className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
+        <div className="grid gap-2 md:grid-cols-5">
+          {[
+            { key: "applications", label: "Bewerbungen" },
+            { key: "messages", label: "Nachrichten" },
+            { key: "candidates", label: "Kandidaten" },
+            { key: "jobs", label: "Offene Stellen" },
+            { key: "profile", label: "Unternehmen" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key as CompanyTab)}
+              className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+                activeTab === tab.key
+                  ? "bg-zinc-900 text-white"
+                  : "text-zinc-700 hover:bg-zinc-100"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {error ? (
+        <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          {error}
+        </p>
+      ) : null}
+      {success ? (
+        <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {success}
+        </p>
+      ) : null}
+
+      {activeTab === "applications" ? (
+        <section className="mt-4">
+          <h2 className="text-xl font-semibold tracking-tight">Bewerbungs-Kanban</h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Kandidaten per Drag-and-drop verschieben: Beworben, Eingeladen, Interviews,
+            Eingestellt, Abgelehnt.
+          </p>
+          <div className="mt-4 grid gap-3 xl:grid-cols-5">
+            {APPLICATION_STAGES.map((stage) => (
+              <div
+                key={stage}
+                className="min-h-[220px] rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={async () => {
+                  if (!draggedApplicationId) {
+                    return;
+                  }
+                  await moveApplicationToStage(draggedApplicationId, stage);
+                  setDraggedApplicationId(null);
+                }}
+              >
+                <h3 className="text-sm font-semibold">{APPLICATION_STAGE_LABELS[stage]}</h3>
+                <div className="mt-3 space-y-2">
+                  {groupedApplications[stage].length ? (
+                    groupedApplications[stage].map((application) => (
+                      <div
+                        key={application.id}
+                        draggable
+                        onDragStart={() => setDraggedApplicationId(application.id)}
+                        className="cursor-grab rounded-xl border border-zinc-200 bg-zinc-50 p-3 active:cursor-grabbing"
+                      >
+                        <p className="text-sm font-medium">{application.candidateName}</p>
+                        <p className="text-xs text-zinc-600">{application.jobTitle}</p>
+                        <p className="mt-1 text-[11px] text-zinc-500">
+                          {application.candidateLocation ?? "Standort offen"}
+                        </p>
+                        {application.threadId ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveThreadId(application.threadId);
+                              setActiveTab("messages");
+                            }}
+                            className="mt-2 rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-white"
+                          >
+                            Nachricht öffnen
+                          </button>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-zinc-500">Keine Einträge</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === "messages" ? (
+        <section className="mt-4 grid gap-4 lg:grid-cols-[320px,1fr]">
+          <article className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm">
+            <h2 className="px-2 pb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+              Nachrichten
+            </h2>
+            <div className="space-y-2">
+              {threads.length ? (
+                threads.map((thread) => (
+                  <button
+                    key={thread.id}
+                    type="button"
+                    onClick={() => setActiveThreadId(thread.id)}
+                    className={`w-full rounded-xl border p-3 text-left transition ${
+                      activeThreadId === thread.id
+                        ? "border-zinc-900 bg-zinc-900 text-white"
+                        : "border-zinc-200 bg-white hover:bg-zinc-50"
+                    }`}
+                  >
+                    <p className="text-sm font-medium">{thread.candidate.name}</p>
+                    <p
+                      className={`mt-0.5 text-xs ${
+                        activeThreadId === thread.id ? "text-zinc-300" : "text-zinc-600"
+                      }`}
+                    >
+                      {thread.jobTitle ?? "Allgemeiner Chat"}
+                    </p>
+                    {thread.latestMessage ? (
+                      <p
+                        className={`mt-1 line-clamp-2 text-xs ${
+                          activeThreadId === thread.id ? "text-zinc-300" : "text-zinc-500"
+                        }`}
+                      >
+                        {thread.latestMessage.content}
+                      </p>
+                    ) : null}
+                  </button>
+                ))
+              ) : (
+                <p className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                  Noch keine Nachrichten.
+                </p>
+              )}
+            </div>
+          </article>
+          <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            {activeThread ? (
+              <>
+                <div className="border-b border-zinc-200 pb-3">
+                  <p className="text-sm font-semibold">{activeThread.candidate.name}</p>
+                  <p className="text-xs text-zinc-500">{activeThread.jobTitle ?? "Allgemeiner Chat"}</p>
+                </div>
+                <div className="mt-3 h-[380px] space-y-2 overflow-y-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  {threadMessages.length ? (
+                    threadMessages.map((message) => (
+                      <div
+                        key={message.id}
+                        className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
+                          message.senderRole === "COMPANY"
+                            ? "ml-auto bg-zinc-900 text-white"
+                            : "bg-white text-zinc-800"
+                        }`}
+                      >
+                        <p>{message.content}</p>
+                        <p
+                          className={`mt-1 text-[11px] ${
+                            message.senderRole === "COMPANY" ? "text-zinc-300" : "text-zinc-500"
+                          }`}
+                        >
+                          {new Date(message.createdAt).toLocaleString("de-DE")}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-zinc-500">Noch keine Nachrichten in diesem Chat.</p>
+                  )}
+                </div>
+                <form onSubmit={sendMessageInThread} className="mt-3 flex gap-2">
+                  <input
+                    value={messageText}
+                    onChange={(event) => setMessageText(event.target.value)}
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                    placeholder="Nachricht schreiben..."
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+                  >
+                    Senden
+                  </button>
+                </form>
+              </>
+            ) : (
+              <p className="text-sm text-zinc-600">Wähle links einen Chat aus.</p>
+            )}
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === "candidates" ? (
+        <section className="mt-4 space-y-4">
+          <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <h2 className="text-lg font-semibold">Kandidatensuche</h2>
+            <form onSubmit={runCandidateSearch} className="mt-3 grid gap-3 md:grid-cols-4">
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4 md:col-span-2"
+                placeholder="Name, Headline oder Skill"
+              />
+              <input
+                value={searchLocation}
+                onChange={(event) => setSearchLocation(event.target.value)}
+                className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Standort"
+              />
+              <input
+                value={searchMinExperience}
+                onChange={(event) => setSearchMinExperience(event.target.value)}
+                type="number"
+                min={0}
+                className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Erfahrung ab"
+              />
+              <textarea
+                value={searchSkills}
+                onChange={(event) => setSearchSkills(event.target.value)}
+                className="h-20 rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4 md:col-span-3"
+                placeholder="Skills (eine Zeile pro Skill)"
+              />
+              <button
+                type="submit"
+                className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+              >
+                Suchen
+              </button>
+            </form>
+          </article>
+
+          <div className="space-y-3">
+            {candidates.length ? (
+              candidates.map((candidate) => (
+                <article key={candidate.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-zinc-200 text-sm font-semibold text-zinc-600">
+                        {candidate.avatarUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={candidate.avatarUrl} alt={candidate.firstName} className="h-full w-full object-cover" />
+                        ) : (
+                          <span>{candidate.firstName.slice(0, 1)}{candidate.lastName.slice(0, 1)}</span>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-base font-semibold">
+                          {candidate.firstName} {candidate.lastName}
+                        </p>
+                        <p className="text-sm text-zinc-600">{candidate.headline ?? "Ohne Headline"}</p>
+                        <p className="mt-1 text-xs text-zinc-500">
+                          {candidate.location ?? "Standort offen"} · {candidate.experienceYears} Jahre · Match{" "}
+                          {candidate.score}%
+                        </p>
+                      </div>
+                    </div>
+                    <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white">
+                      {candidate.visibility}
+                    </span>
+                  </div>
+                  <p className="mt-3 text-sm text-zinc-700">{candidate.summary ?? "Keine Zusammenfassung."}</p>
+                  <p className="mt-2 text-xs text-zinc-500">Skills: {candidate.skills.join(", ") || "keine"}</p>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Gehalt: {formatMoney(candidate.salaryMin, candidate.salaryMax, candidate.currency)}
+                  </p>
+                  <div className="mt-3 grid gap-2 md:grid-cols-[1fr,140px]">
+                    <textarea
+                      value={candidateMessageDrafts[candidate.id] ?? ""}
+                      onChange={(event) =>
+                        setCandidateMessageDrafts((current) => ({
+                          ...current,
+                          [candidate.id]: event.target.value,
+                        }))
+                      }
+                      className="h-20 rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                      placeholder="Nachricht an Kandidat..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void sendMessageToCandidate(candidate.id)}
+                      className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+                    >
+                      Nachricht senden
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-600">
+                Keine Kandidaten gefunden.
+              </p>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === "jobs" ? (
+        <section className="mt-4 grid gap-4 lg:grid-cols-2">
+          <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold">Neue Stelle veröffentlichen</h2>
+            <form onSubmit={createJob} className="mt-3 space-y-3">
+              <input
+                value={newJobTitle}
+                onChange={(event) => setNewJobTitle(event.target.value)}
+                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Stellentitel"
+                required
+              />
+              <textarea
+                value={newJobDescription}
+                onChange={(event) => setNewJobDescription(event.target.value)}
+                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Beschreibung"
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <input
+                  value={newJobLocation}
+                  onChange={(event) => setNewJobLocation(event.target.value)}
+                  className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  placeholder="Standort"
+                />
+                <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={newJobRemote}
+                    onChange={(event) => setNewJobRemote(event.target.checked)}
+                  />
+                  Remote möglich
+                </label>
+                <input
+                  value={newJobSalaryMin}
+                  onChange={(event) => setNewJobSalaryMin(event.target.value)}
+                  type="number"
+                  className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  placeholder="Gehalt min."
+                />
+                <input
+                  value={newJobSalaryMax}
+                  onChange={(event) => setNewJobSalaryMax(event.target.value)}
+                  type="number"
+                  className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  placeholder="Gehalt max."
+                />
+                <input
+                  value={newJobCurrency}
+                  onChange={(event) => setNewJobCurrency(event.target.value)}
+                  className="rounded-xl border border-zinc-300 px-3 py-2 text-sm uppercase outline-none ring-zinc-900/20 focus:ring-4"
+                  placeholder="Währung"
+                />
+                <input
+                  value={newJobMinExp}
+                  onChange={(event) => setNewJobMinExp(event.target.value)}
+                  type="number"
+                  min={0}
+                  className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  placeholder="Mindest-Erfahrung"
+                />
+              </div>
+              <textarea
+                value={newJobRequiredSkills}
+                onChange={(event) => setNewJobRequiredSkills(event.target.value)}
+                className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Pflichtskills (eine Zeile pro Skill)"
+              />
+              <textarea
+                value={newJobPreferredSkills}
+                onChange={(event) => setNewJobPreferredSkills(event.target.value)}
+                className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Wunschskills (eine Zeile pro Skill)"
+              />
+              <input
+                value={newJobAvailability}
+                onChange={(event) => setNewJobAvailability(event.target.value)}
+                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                placeholder="Verfügbarkeits-Hinweis"
+              />
+              <button
+                type="submit"
+                disabled={savingJob}
+                className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-60"
+              >
+                {savingJob ? "Erstellt..." : "Stelle veröffentlichen"}
+              </button>
+            </form>
+          </article>
+
+          <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold">Offene Stellen</h2>
+            <div className="mt-3 space-y-3">
+              {jobs.length ? (
+                jobs.map((job) => (
+                  <div key={job.id} className="rounded-xl border border-zinc-200 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="font-medium">{job.title}</p>
+                        <p className="text-xs text-zinc-500">
+                          {job.isRemote ? "Remote" : job.location ?? "Standort offen"} ·{" "}
+                          {formatMoney(job.salaryMin, job.salaryMax, job.currency)}
+                        </p>
+                      </div>
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs font-medium ${
+                          job.active ? "bg-emerald-100 text-emerald-700" : "bg-zinc-200 text-zinc-700"
+                        }`}
+                      >
+                        {job.active ? "Aktiv" : "Inaktiv"}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void toggleJobActive(job)}
+                        className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium hover:bg-zinc-100"
+                      >
+                        {job.active ? "Deaktivieren" : "Aktivieren"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void deleteJob(job.id)}
+                        className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
+                      >
+                        Löschen
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-zinc-600">Noch keine Stellen veröffentlicht.</p>
+              )}
+            </div>
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === "profile" ? (
+        <section className="mt-4 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold">Unternehmensprofil</h2>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
             <input
               value={profile.companyName}
-              onChange={(event) => setProfile((current) => (current ? { ...current, companyName: event.target.value } : current))}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              onChange={(event) =>
+                setProfile((current) => (current ? { ...current, companyName: event.target.value } : current))
+              }
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Unternehmensname"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Rechtlicher Name
-            </span>
             <input
               value={profile.legalName ?? ""}
-              onChange={(event) => setProfile((current) => (current ? { ...current, legalName: event.target.value } : current))}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              onChange={(event) =>
+                setProfile((current) => (current ? { ...current, legalName: event.target.value } : current))
+              }
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Rechtlicher Name"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Standort
-            </span>
             <input
               value={profile.location ?? ""}
-              onChange={(event) => setProfile((current) => (current ? { ...current, location: event.target.value } : current))}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              onChange={(event) =>
+                setProfile((current) => (current ? { ...current, location: event.target.value } : current))
+              }
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Standort"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Branche
-            </span>
             <input
               value={profile.industry ?? ""}
-              onChange={(event) => setProfile((current) => (current ? { ...current, industry: event.target.value } : current))}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              onChange={(event) =>
+                setProfile((current) => (current ? { ...current, industry: event.target.value } : current))
+              }
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Branche"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Website
-            </span>
             <input
               value={profile.website ?? ""}
-              onChange={(event) => setProfile((current) => (current ? { ...current, website: event.target.value } : current))}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              onChange={(event) =>
+                setProfile((current) => (current ? { ...current, website: event.target.value } : current))
+              }
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Website"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Geschäftsführer-E-Mail
-            </span>
             <input
               value={profile.managingDirectorEmail ?? ""}
               onChange={(event) =>
-                setProfile((current) => (current ? { ...current, managingDirectorEmail: event.target.value } : current))
+                setProfile((current) =>
+                  current ? { ...current, managingDirectorEmail: event.target.value } : current,
+                )
               }
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Geschäftsführer-E-Mail"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Mitarbeiterzahl
-            </span>
             <input
-              type="number"
-              min={1}
               value={profile.employeeCount ?? ""}
               onChange={(event) =>
                 setProfile((current) =>
@@ -592,546 +1038,54 @@ export default function CompanyDashboardPage() {
                     : current,
                 )
               }
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              type="number"
+              min={1}
+              className="rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              placeholder="Mitarbeiterzahl"
             />
-          </label>
-          <label className="block md:col-span-2">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Beschreibung
-            </span>
             <textarea
               value={profile.description ?? ""}
-              onChange={(event) => setProfile((current) => (current ? { ...current, description: event.target.value } : current))}
-              className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+              onChange={(event) =>
+                setProfile((current) => (current ? { ...current, description: event.target.value } : current))
+              }
+              className="h-24 rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4 md:col-span-2"
+              placeholder="Unternehmensbeschreibung"
             />
-          </label>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={savingProfile}
-            onClick={() => saveProfile(false)}
-            className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-60"
-          >
-            {savingProfile ? "Speichert..." : "Profil speichern"}
-          </button>
-          <button
-            type="button"
-            disabled={savingProfile || profile.verificationStatus !== VERIFICATION_STATUS.UNVERIFIED}
-            onClick={() => saveProfile(true)}
-            className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 disabled:opacity-60"
-          >
-            Verifizierung anfragen
-          </button>
-        </div>
-      </section>
-
-      <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Neue Stelle veröffentlichen</h2>
-          <form className="mt-4 space-y-3" onSubmit={createJob}>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Titel
-                </span>
-                <input
-                  value={newJobTitle}
-                  onChange={(event) => setNewJobTitle(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                  required
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Beschreibung
-                </span>
-                <textarea
-                  value={newJobDescription}
-                  onChange={(event) => setNewJobDescription(event.target.value)}
-                  className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Standort
-                </span>
-                <input
-                  value={newJobLocation}
-                  onChange={(event) => setNewJobLocation(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:mt-6">
-                <input
-                  type="checkbox"
-                  checked={newJobRemote}
-                  onChange={(event) => setNewJobRemote(event.target.checked)}
-                />
-                Remote möglich
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Gehalt min.
-                </span>
-                <input
-                  type="number"
-                  value={newJobSalaryMin}
-                  onChange={(event) => setNewJobSalaryMin(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Gehalt max.
-                </span>
-                <input
-                  type="number"
-                  value={newJobSalaryMax}
-                  onChange={(event) => setNewJobSalaryMax(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Währung
-                </span>
-                <input
-                  value={newJobCurrency}
-                  onChange={(event) => setNewJobCurrency(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm uppercase outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Mindest-Erfahrung (Jahre)
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  value={newJobMinExp}
-                  onChange={(event) => setNewJobMinExp(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Pflichtskills (eine Zeile pro Skill)
-                </span>
-                <textarea
-                  value={newJobRequiredSkills}
-                  onChange={(event) => setNewJobRequiredSkills(event.target.value)}
-                  className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Wunschskills (eine Zeile pro Skill)
-                </span>
-                <textarea
-                  value={newJobPreferredSkills}
-                  onChange={(event) => setNewJobPreferredSkills(event.target.value)}
-                  className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Verfügbarkeits-Hinweis
-                </span>
-                <input
-                  value={newJobAvailability}
-                  onChange={(event) => setNewJobAvailability(event.target.value)}
-                  className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                />
-              </label>
-            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
             <button
-              type="submit"
-              disabled={savingJob}
+              type="button"
+              disabled={savingProfile}
+              onClick={() => void saveProfile(false)}
               className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-60"
             >
-              {savingJob ? "Erstellt..." : "Stelle veröffentlichen"}
+              {savingProfile ? "Speichert..." : "Profil speichern"}
             </button>
-          </form>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Stellenübersicht</h2>
-          <div className="mt-4 space-y-3">
-            {jobs.length ? (
-              jobs.map((job) => (
-                <div key={job.id} className="rounded-xl border border-zinc-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="font-medium">{job.title}</p>
-                      <p className="text-xs text-zinc-500">
-                        {job.isRemote ? "Remote" : job.location || "Standort offen"} ·{" "}
-                        {formatMoney(job.salaryMin, job.salaryMax, job.currency)}
-                      </p>
-                    </div>
-                    <span
-                      className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                        job.active ? "bg-emerald-100 text-emerald-700" : "bg-zinc-200 text-zinc-700"
-                      }`}
-                    >
-                      {job.active ? "Aktiv" : "Inaktiv"}
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs text-zinc-500">
-                    Pflichtskills: {job.requiredSkills.join(", ") || "keine"}
-                  </p>
-                  <div className="mt-3 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => toggleJobActive(job)}
-                      className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium hover:bg-zinc-100"
-                    >
-                      {job.active ? "Deaktivieren" : "Aktivieren"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteJob(job.id)}
-                      className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100"
-                    >
-                      Löschen
-                    </button>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">Noch keine Stellen angelegt.</p>
-            )}
-          </div>
-        </article>
-      </section>
-
-      <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-        <h2 className="text-lg font-semibold">Kandidatensuche mit Filtern</h2>
-        <form onSubmit={runSearch} className="mt-4 grid gap-3 md:grid-cols-3">
-          <label className="block md:col-span-3">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Volltextsuche (Name, Headline, Skill)
-            </span>
-            <input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              placeholder="z. B. TypeScript, Product Designer, Berlin ..."
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Standort
-            </span>
-            <input
-              value={searchLocation}
-              onChange={(event) => setSearchLocation(event.target.value)}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Skills (eine Zeile pro Skill)
-            </span>
-            <textarea
-              value={searchSkills}
-              onChange={(event) => setSearchSkills(event.target.value)}
-              className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Verfügbarkeits-Text
-            </span>
-            <input
-              value={searchAvailability}
-              onChange={(event) => setSearchAvailability(event.target.value)}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Erfahrung ab (Jahre)
-            </span>
-            <input
-              type="number"
-              min={0}
-              value={searchMinExperience}
-              onChange={(event) => setSearchMinExperience(event.target.value)}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Gehalt min.
-            </span>
-            <input
-              type="number"
-              value={searchMinSalary}
-              onChange={(event) => setSearchMinSalary(event.target.value)}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-            />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-              Gehalt max.
-            </span>
-            <input
-              type="number"
-              value={searchMaxSalary}
-              onChange={(event) => setSearchMaxSalary(event.target.value)}
-              className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-            />
-          </label>
-          <div className="md:col-span-3">
             <button
-              type="submit"
-              className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+              type="button"
+              disabled={savingProfile || profile.verificationStatus !== "UNVERIFIED"}
+              onClick={() => void saveProfile(true)}
+              className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100 disabled:opacity-60"
             >
-              Kandidaten suchen
+              Verifizierung anfragen
+            </button>
+            <button
+              type="button"
+              onClick={exportData}
+              className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100"
+            >
+              Datenexport
+            </button>
+            <button
+              type="button"
+              onClick={deleteAccount}
+              className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+            >
+              Konto löschen
             </button>
           </div>
-        </form>
-
-        <div className="mt-5 space-y-3">
-          {searchResults.length ? (
-            searchResults.map((candidate) => {
-              const compareChecked = compareIds.includes(candidate.id);
-              return (
-                <div key={candidate.id} className="rounded-xl border border-zinc-200 p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <p className="font-medium">
-                        {candidate.firstName} {candidate.lastName}
-                      </p>
-                      <p className="text-sm text-zinc-600">{candidate.headline ?? "Ohne Headline"}</p>
-                      <p className="text-xs text-zinc-500">
-                        {candidate.location || "Standort offen"} · {candidate.experienceYears} Jahre ·{" "}
-                        {formatMoney(candidate.salaryMin, candidate.salaryMax, candidate.currency)}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white">
-                        Match {candidate.score}%
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => toggleFavorite(candidate)}
-                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
-                          candidate.isFavorite
-                            ? "border-amber-300 bg-amber-50 text-amber-700"
-                            : "border-zinc-300 hover:bg-zinc-100"
-                        }`}
-                      >
-                        {candidate.isFavorite ? "Favorit entfernen" : "Zu Favoriten"}
-                      </button>
-                    </div>
-                  </div>
-                  <p className="mt-2 text-sm text-zinc-700">{candidate.summary ?? "Keine Zusammenfassung."}</p>
-                  <p className="mt-2 text-xs text-zinc-500">Skills: {candidate.skills.join(", ") || "keine"}</p>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <label className="inline-flex items-center gap-2 text-xs text-zinc-600">
-                      <input
-                        type="checkbox"
-                        checked={compareChecked}
-                        onChange={() => toggleCompare(candidate.id)}
-                      />
-                      Für Vergleich markieren
-                    </label>
-                  </div>
-                  <div className="mt-3 grid gap-2 md:grid-cols-[1fr,220px]">
-                    <textarea
-                      value={contactDrafts[candidate.id] ?? ""}
-                      onChange={(event) =>
-                        setContactDrafts((current) => ({
-                          ...current,
-                          [candidate.id]: event.target.value,
-                        }))
-                      }
-                      className="h-20 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                      placeholder="Kontaktanfrage an Kandidaten..."
-                    />
-                    <div className="space-y-2">
-                      <select
-                        value={contactJobSelection[candidate.id] ?? ""}
-                        onChange={(event) =>
-                          setContactJobSelection((current) => ({
-                            ...current,
-                            [candidate.id]: event.target.value,
-                          }))
-                        }
-                        className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                      >
-                        <option value="">Ohne Stellenbezug</option>
-                        {activeJobs.map((job) => (
-                          <option key={job.id} value={job.id}>
-                            {job.title}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => sendContactRequest(candidate.id)}
-                        className="w-full rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-700"
-                      >
-                        Anfrage senden
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <p className="text-sm text-zinc-600">Keine Kandidaten gefunden.</p>
-          )}
-        </div>
-      </section>
-
-      <section className="mt-4 grid gap-4 xl:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Favoritenliste</h2>
-          <div className="mt-4 space-y-3">
-            {favorites.length ? (
-              favorites.map((favorite) => (
-                <div key={favorite.id} className="rounded-xl border border-zinc-200 p-3">
-                  <p className="font-medium">{favorite.name}</p>
-                  <p className="text-sm text-zinc-600">{favorite.headline ?? "Ohne Headline"}</p>
-                  <p className="text-xs text-zinc-500">
-                    {favorite.location ?? "Standort offen"} · {favorite.experienceYears} Jahre
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">Skills: {favorite.skills.join(", ")}</p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">Noch keine Favoriten gespeichert.</p>
-            )}
-          </div>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Matching-Vorschläge</h2>
-          <p className="mt-1 text-sm text-zinc-600">
-            KI-ähnlicher Score aus Skills, Erfahrung, Standort und Gehalt.
-          </p>
-          <div className="mt-4 space-y-3">
-            {matching.length ? (
-              matching.map((entry) => (
-                <div key={entry.candidateId} className="rounded-xl border border-zinc-200 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="font-medium">{entry.name}</p>
-                      <p className="text-sm text-zinc-600">{entry.headline ?? "Ohne Headline"}</p>
-                    </div>
-                    <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white">
-                      {entry.score}%
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs text-zinc-500">
-                    {entry.location ?? "Standort offen"} · {entry.experienceYears} Jahre ·{" "}
-                    {entry.skills.join(", ")}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">Noch keine Matching-Vorschläge vorhanden.</p>
-            )}
-          </div>
-        </article>
-      </section>
-
-      <section className="mt-4 grid gap-4 xl:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Kandidatenvergleich</h2>
-          <p className="mt-1 text-sm text-zinc-600">
-            Vergleiche ausgewählte Kandidaten direkt nebeneinander.
-          </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            {compareResults.length ? (
-              compareResults.map((candidate) => (
-                <div key={candidate.id} className="rounded-xl border border-zinc-200 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-medium">{candidate.name}</p>
-                    <span className="rounded-full bg-zinc-900 px-2 py-0.5 text-xs text-white">
-                      {candidate.score}%
-                    </span>
-                  </div>
-                  <p className="mt-1 text-sm text-zinc-600">{candidate.headline ?? "Ohne Headline"}</p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {candidate.location ?? "Standort offen"} · {candidate.experienceYears} Jahre
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Gehalt: {formatMoney(candidate.salaryMin, candidate.salaryMax, candidate.currency)}
-                  </p>
-                  <p className="mt-1 text-xs text-zinc-500">
-                    Skills: {candidate.skills.join(", ") || "keine"}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">
-                Markiere in den Suchergebnissen Kandidaten für den Vergleich (max. 5).
-              </p>
-            )}
-          </div>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Gesendete Kontaktanfragen</h2>
-          <div className="mt-4 space-y-3">
-            {contacts.length ? (
-              contacts.map((contact) => (
-                <div key={contact.id} className="rounded-xl border border-zinc-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-medium">{contact.candidateName}</p>
-                    <span className="rounded-full border border-zinc-300 px-2.5 py-1 text-xs font-medium">
-                      {contact.status}
-                    </span>
-                  </div>
-                  {contact.jobTitle ? (
-                    <p className="mt-1 text-xs text-zinc-500">Stelle: {contact.jobTitle}</p>
-                  ) : null}
-                  <p className="mt-2 text-sm text-zinc-700">{contact.message}</p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">Noch keine Kontaktanfragen versendet.</p>
-            )}
-          </div>
-        </article>
-      </section>
-
-      <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-        {error ? (
-          <p className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            {error}
-          </p>
-        ) : null}
-        {success ? (
-          <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {success}
-          </p>
-        ) : null}
-        <h2 className="text-lg font-semibold">DSGVO & Datenrechte</h2>
-        <p className="mt-1 text-sm text-zinc-600">
-          Datenexport und Konto-Löschung stehen jederzeit zur Verfügung.
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={exportData}
-            className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100"
-          >
-            Datenexport herunterladen
-          </button>
-          <button
-            type="button"
-            onClick={deleteAccount}
-            className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
-          >
-            Unternehmenskonto löschen
-          </button>
-        </div>
-      </section>
+        </section>
+      ) : null}
     </main>
   );
 }

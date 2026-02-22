@@ -1,6 +1,13 @@
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import bcrypt from "bcryptjs";
-import { PrismaClient, UserRole, VisibilityStatus, VerificationStatus } from "@prisma/client";
+import {
+  ApplicationStage,
+  MessageSenderRole,
+  PrismaClient,
+  UserRole,
+  VerificationStatus,
+  VisibilityStatus,
+} from "@prisma/client";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -44,7 +51,6 @@ async function main() {
       userId: candidateUser.id,
       firstName: "Mina",
       lastName: "Mustermann",
-      phone: "+49 170 000000",
       location: "Berlin",
       headline: "Senior Fullstack Entwicklerin",
       summary: "8 Jahre Erfahrung mit TypeScript, React, Node.js und Cloud-Deployments.",
@@ -109,7 +115,7 @@ async function main() {
     },
   });
 
-  await prisma.jobPosting.upsert({
+  const mainJob = await prisma.jobPosting.upsert({
     where: {
       id: "demo-job-fullstack-1",
     },
@@ -131,6 +137,28 @@ async function main() {
     },
   });
 
+  await prisma.jobPosting.upsert({
+    where: {
+      id: "demo-job-product-1",
+    },
+    update: {},
+    create: {
+      id: "demo-job-product-1",
+      companyProfileId: companyProfile.id,
+      title: "Product Manager (m/w/d)",
+      description: "Weiterentwicklung einer modernen Bewerbungsplattform.",
+      location: "Hamburg",
+      isRemote: true,
+      salaryMin: 68000,
+      salaryMax: 86000,
+      minExperienceYears: 3,
+      requiredSkillsJson: JSON.stringify(["Product Management", "Agile", "Stakeholder Management"]),
+      preferredSkillsJson: JSON.stringify(["SaaS", "B2B", "Analytics"]),
+      availabilityNote: "Start innerhalb von 2 Monaten",
+      active: true,
+    },
+  });
+
   await prisma.favoriteCandidate.upsert({
     where: {
       companyProfileId_candidateProfileId: {
@@ -144,6 +172,61 @@ async function main() {
       candidateProfileId: candidateProfile.id,
     },
   });
+
+  const application = await prisma.application.upsert({
+    where: {
+      candidateProfileId_jobPostingId: {
+        candidateProfileId: candidateProfile.id,
+        jobPostingId: mainJob.id,
+      },
+    },
+    update: {
+      stage: ApplicationStage.INTERVIEWS,
+    },
+    create: {
+      candidateProfileId: candidateProfile.id,
+      companyProfileId: companyProfile.id,
+      jobPostingId: mainJob.id,
+      stage: ApplicationStage.INTERVIEWS,
+    },
+  });
+
+  const thread = await prisma.messageThread.upsert({
+    where: {
+      applicationId: application.id,
+    },
+    update: {},
+    create: {
+      applicationId: application.id,
+      candidateProfileId: candidateProfile.id,
+      companyProfileId: companyProfile.id,
+    },
+  });
+
+  const existingMessages = await prisma.message.count({
+    where: {
+      threadId: thread.id,
+    },
+  });
+
+  if (!existingMessages) {
+    await prisma.message.createMany({
+      data: [
+        {
+          threadId: thread.id,
+          senderRole: MessageSenderRole.COMPANY,
+          senderUserId: companyUser.id,
+          content: "Hallo Mina, danke für deine Bewerbung. Wir würden dich gerne zum Interview einladen.",
+        },
+        {
+          threadId: thread.id,
+          senderRole: MessageSenderRole.CANDIDATE,
+          senderUserId: candidateUser.id,
+          content: "Danke für die Einladung. Ich freue mich auf den Termin!",
+        },
+      ],
+    });
+  }
 
   console.log("Seed erfolgreich ausgeführt.");
 }

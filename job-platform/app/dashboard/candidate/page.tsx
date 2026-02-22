@@ -1,7 +1,12 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
+import {
+  APPLICATION_STAGES,
+  APPLICATION_STAGE_LABELS,
+  type ApplicationStageValue,
+} from "@/lib/applications";
 
 const VISIBILITY_STATUS = {
   ACTIVE_SEARCH: "ACTIVE_SEARCH",
@@ -10,19 +15,13 @@ const VISIBILITY_STATUS = {
 } as const;
 
 type VisibilityStatusValue = (typeof VISIBILITY_STATUS)[keyof typeof VISIBILITY_STATUS];
-
-const CONTACT_STATUS = {
-  PENDING: "PENDING",
-  ACCEPTED: "ACCEPTED",
-  DECLINED: "DECLINED",
-} as const;
-
-type ContactStatusValue = (typeof CONTACT_STATUS)[keyof typeof CONTACT_STATUS];
+type CandidateTab = "profile" | "jobs" | "applications" | "messages";
 
 type CandidateProfileResponse = {
   id: string;
   firstName: string;
   lastName: string;
+  avatarUrl: string | null;
   phone: string | null;
   location: string | null;
   headline: string | null;
@@ -37,58 +36,77 @@ type CandidateProfileResponse = {
   availabilityNote: string | null;
   experienceYears: number;
   skills: string[];
-  experiences: Array<{
-    company: string;
-    title: string;
-    start?: string;
-    end?: string | null;
-    description?: string;
-  }>;
-  educations: Array<{
-    institution: string;
-    degree: string;
-    field?: string;
-    startYear?: number;
-    endYear?: number;
-  }>;
-  certificates: Array<{
-    name: string;
-    issuer?: string;
-    year?: number;
-    url?: string;
-  }>;
-  portfolio: Array<{
-    title: string;
-    url?: string;
-    description?: string;
-    type?: "link" | "file";
-  }>;
+  experiences: Array<Record<string, unknown>>;
+  educations: Array<Record<string, unknown>>;
+  certificates: Array<Record<string, unknown>>;
+  portfolio: Array<Record<string, unknown>>;
   preferredLocations: string[];
   preferredEmploymentTypes: string[];
   blockedCompanyIds: string[];
   blockedManagerEmails: string[];
 };
 
-type CandidateMatch = {
-  jobId: string;
+type OpenJob = {
+  id: string;
   title: string;
   companyName: string;
+  companyId: string;
   location: string | null;
   remote: boolean;
   salaryMin: number | null;
   salaryMax: number | null;
   currency: string;
   requiredSkills: string[];
-  score: number;
+  description: string | null;
+  hasApplied: boolean;
+  applicationStage: ApplicationStageValue | null;
 };
 
-type ContactRequest = {
+type CandidateApplication = {
   id: string;
-  companyName: string;
-  message: string;
-  status: ContactStatusValue;
-  jobTitle: string | null;
+  stage: ApplicationStageValue;
   createdAt: string;
+  updatedAt: string;
+  companyName: string;
+  companyId: string;
+  jobTitle: string;
+  jobId: string;
+  threadId: string | null;
+};
+
+type MessageThreadListEntry = {
+  id: string;
+  applicationId: string | null;
+  jobTitle: string | null;
+  company: { id: string; name: string };
+  candidate: { id: string; name: string; avatarUrl: string | null };
+  latestMessage: {
+    id: string;
+    content: string;
+    senderRole: "CANDIDATE" | "COMPANY";
+    createdAt: string;
+  } | null;
+  unreadCount: number;
+  updatedAt: string;
+};
+
+type ThreadMessage = {
+  id: string;
+  senderRole: "CANDIDATE" | "COMPANY";
+  content: string;
+  createdAt: string;
+  readAt: string | null;
+};
+
+type ThreadResponse = {
+  thread: {
+    id: string;
+    applicationId: string | null;
+    jobTitle: string | null;
+    company: { id: string; name: string };
+    candidate: { id: string; name: string; avatarUrl: string | null };
+  };
+  messages: ThreadMessage[];
 };
 
 function linesToList(value: string) {
@@ -98,133 +116,62 @@ function linesToList(value: string) {
     .filter(Boolean);
 }
 
-function stringifyList(value: string[] | undefined) {
-  return (value ?? []).join("\n");
-}
-
-function formatDateForInput(value: string | null | undefined) {
-  if (!value) {
-    return "";
+function formatMoney(min: number | null, max: number | null, currency: string) {
+  if (!min && !max) {
+    return "keine Angabe";
   }
-  return value.slice(0, 10);
-}
-
-function parseExperienceLines(value: string) {
-  return linesToList(value).map((line) => {
-    const [company = "", title = "", start = "", end = "", description = ""] = line
-      .split("|")
-      .map((part) => part.trim());
-    return {
-      company,
-      title,
-      start: start || undefined,
-      end: end || null,
-      description: description || undefined,
-    };
-  });
-}
-
-function parseEducationLines(value: string) {
-  return linesToList(value).map((line) => {
-    const [institution = "", degree = "", field = "", startYear = "", endYear = ""] = line
-      .split("|")
-      .map((part) => part.trim());
-    return {
-      institution,
-      degree,
-      field: field || undefined,
-      startYear: startYear ? Number(startYear) : undefined,
-      endYear: endYear ? Number(endYear) : undefined,
-    };
-  });
-}
-
-function parseCertificateLines(value: string) {
-  return linesToList(value).map((line) => {
-    const [name = "", issuer = "", year = "", url = ""] = line.split("|").map((part) => part.trim());
-    return {
-      name,
-      issuer: issuer || undefined,
-      year: year ? Number(year) : undefined,
-      url: url || undefined,
-    };
-  });
-}
-
-function parsePortfolioLines(value: string) {
-  return linesToList(value).map((line) => {
-    const [title = "", url = "", description = "", type = "link"] = line
-      .split("|")
-      .map((part) => part.trim());
-    return {
-      title,
-      url: url || undefined,
-      description: description || undefined,
-      type: type === "file" ? "file" : "link",
-    };
-  });
-}
-
-function serializeExperienceLines(experiences: CandidateProfileResponse["experiences"]) {
-  return experiences
-    .map(
-      (item) =>
-        `${item.company ?? ""}|${item.title ?? ""}|${item.start ?? ""}|${item.end ?? ""}|${item.description ?? ""}`,
-    )
-    .join("\n");
-}
-
-function serializeEducationLines(educations: CandidateProfileResponse["educations"]) {
-  return educations
-    .map(
-      (item) =>
-        `${item.institution ?? ""}|${item.degree ?? ""}|${item.field ?? ""}|${item.startYear ?? ""}|${item.endYear ?? ""}`,
-    )
-    .join("\n");
-}
-
-function serializeCertificateLines(certificates: CandidateProfileResponse["certificates"]) {
-  return certificates
-    .map((item) => `${item.name ?? ""}|${item.issuer ?? ""}|${item.year ?? ""}|${item.url ?? ""}`)
-    .join("\n");
-}
-
-function serializePortfolioLines(portfolio: CandidateProfileResponse["portfolio"]) {
-  return portfolio
-    .map((item) => `${item.title ?? ""}|${item.url ?? ""}|${item.description ?? ""}|${item.type ?? "link"}`)
-    .join("\n");
+  return `${min ?? "-"} - ${max ?? "-"} ${currency}`;
 }
 
 export default function CandidateDashboardPage() {
+  const [activeTab, setActiveTab] = useState<CandidateTab>("jobs");
   const [profile, setProfile] = useState<CandidateProfileResponse | null>(null);
-  const [matches, setMatches] = useState<CandidateMatch[]>([]);
-  const [contacts, setContacts] = useState<ContactRequest[]>([]);
+  const [skillsText, setSkillsText] = useState("");
+  const [openJobs, setOpenJobs] = useState<OpenJob[]>([]);
+  const [applications, setApplications] = useState<CandidateApplication[]>([]);
+  const [threads, setThreads] = useState<MessageThreadListEntry[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [messageText, setMessageText] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  const [skillsText, setSkillsText] = useState("");
-  const [preferredLocationsText, setPreferredLocationsText] = useState("");
-  const [preferredEmploymentTypesText, setPreferredEmploymentTypesText] = useState("");
-  const [blockedCompanyIdsText, setBlockedCompanyIdsText] = useState("");
-  const [blockedManagerEmailsText, setBlockedManagerEmailsText] = useState("");
-  const [experiencesText, setExperiencesText] = useState("");
-  const [educationsText, setEducationsText] = useState("");
-  const [certificatesText, setCertificatesText] = useState("");
-  const [portfolioText, setPortfolioText] = useState("");
-  const [fileToUpload, setFileToUpload] = useState<File | null>(null);
-  const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const activeThread = useMemo(
+    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
+    [threads, activeThreadId],
+  );
+
+  const groupedApplications = useMemo(
+    () =>
+      APPLICATION_STAGES.reduce<Record<ApplicationStageValue, CandidateApplication[]>>(
+        (acc, stage) => {
+          acc[stage] = applications.filter((application) => application.stage === stage);
+          return acc;
+        },
+        {
+          APPLIED: [],
+          INVITED: [],
+          INTERVIEWS: [],
+          HIRED: [],
+          REJECTED: [],
+        },
+      ),
+    [applications],
+  );
 
   useEffect(() => {
-    async function loadData() {
+    async function loadInitialData() {
       setLoading(true);
       setError(null);
       try {
-        const [profileRes, matchingRes, contactsRes] = await Promise.all([
+        const [profileRes, jobsRes, applicationsRes, threadsRes] = await Promise.all([
           fetch("/api/private/candidate/profile"),
-          fetch("/api/private/candidate/matching"),
-          fetch("/api/private/candidate/contact-requests"),
+          fetch("/api/private/candidate/open-jobs"),
+          fetch("/api/private/candidate/applications"),
+          fetch("/api/private/messages"),
         ]);
 
         if (!profileRes.ok) {
@@ -233,24 +180,24 @@ export default function CandidateDashboardPage() {
 
         const profileData = (await profileRes.json()) as { profile: CandidateProfileResponse };
         setProfile(profileData.profile);
-        setSkillsText(stringifyList(profileData.profile.skills));
-        setPreferredLocationsText(stringifyList(profileData.profile.preferredLocations));
-        setPreferredEmploymentTypesText(stringifyList(profileData.profile.preferredEmploymentTypes));
-        setBlockedCompanyIdsText(stringifyList(profileData.profile.blockedCompanyIds));
-        setBlockedManagerEmailsText(stringifyList(profileData.profile.blockedManagerEmails));
-        setExperiencesText(serializeExperienceLines(profileData.profile.experiences));
-        setEducationsText(serializeEducationLines(profileData.profile.educations));
-        setCertificatesText(serializeCertificateLines(profileData.profile.certificates));
-        setPortfolioText(serializePortfolioLines(profileData.profile.portfolio));
+        setSkillsText(profileData.profile.skills.join("\n"));
 
-        if (matchingRes.ok) {
-          const matchingData = (await matchingRes.json()) as { matches: CandidateMatch[] };
-          setMatches(matchingData.matches ?? []);
+        if (jobsRes.ok) {
+          const jobsData = (await jobsRes.json()) as { jobs: OpenJob[] };
+          setOpenJobs(jobsData.jobs ?? []);
         }
 
-        if (contactsRes.ok) {
-          const contactData = (await contactsRes.json()) as { requests: ContactRequest[] };
-          setContacts(contactData.requests ?? []);
+        if (applicationsRes.ok) {
+          const appData = (await applicationsRes.json()) as { applications: CandidateApplication[] };
+          setApplications(appData.applications ?? []);
+        }
+
+        if (threadsRes.ok) {
+          const threadData = (await threadsRes.json()) as { threads: MessageThreadListEntry[] };
+          setThreads(threadData.threads ?? []);
+          if (threadData.threads?.length) {
+            setActiveThreadId(threadData.threads[0].id);
+          }
         }
       } catch (loadError) {
         console.error(loadError);
@@ -260,44 +207,51 @@ export default function CandidateDashboardPage() {
       }
     }
 
-    loadData();
+    loadInitialData();
   }, []);
 
-  const completionScore = useMemo(() => {
-    if (!profile) {
-      return 0;
+  useEffect(() => {
+    async function loadThread() {
+      if (!activeThreadId) {
+        setThreadMessages([]);
+        return;
+      }
+
+      const response = await fetch(`/api/private/messages/${activeThreadId}`);
+      if (!response.ok) {
+        return;
+      }
+
+      const data = (await response.json()) as ThreadResponse;
+      setThreadMessages(data.messages ?? []);
     }
 
-    const checkpoints = [
-      Boolean(profile.headline),
-      Boolean(profile.summary),
-      Boolean(profile.location),
-      profile.skills.length > 0,
-      profile.experiences.length > 0,
-      profile.educations.length > 0,
-      profile.certificates.length > 0,
-      profile.portfolio.length > 0,
-      Boolean(profile.salaryMin || profile.salaryMax),
-      Boolean(profile.availabilityNote || profile.availableFrom),
-    ];
+    loadThread();
+  }, [activeThreadId]);
 
-    return Math.round((checkpoints.filter(Boolean).length / checkpoints.length) * 100);
-  }, [profile]);
-
-  async function refreshContactsAndMatches() {
-    const [matchingRes, contactsRes] = await Promise.all([
-      fetch("/api/private/candidate/matching"),
-      fetch("/api/private/candidate/contact-requests"),
+  async function refreshJobsApplicationsAndThreads() {
+    const [jobsRes, applicationsRes, threadsRes] = await Promise.all([
+      fetch("/api/private/candidate/open-jobs"),
+      fetch("/api/private/candidate/applications"),
+      fetch("/api/private/messages"),
     ]);
 
-    if (matchingRes.ok) {
-      const matchingData = (await matchingRes.json()) as { matches: CandidateMatch[] };
-      setMatches(matchingData.matches ?? []);
+    if (jobsRes.ok) {
+      const jobsData = (await jobsRes.json()) as { jobs: OpenJob[] };
+      setOpenJobs(jobsData.jobs ?? []);
     }
 
-    if (contactsRes.ok) {
-      const contactData = (await contactsRes.json()) as { requests: ContactRequest[] };
-      setContacts(contactData.requests ?? []);
+    if (applicationsRes.ok) {
+      const appData = (await applicationsRes.json()) as { applications: CandidateApplication[] };
+      setApplications(appData.applications ?? []);
+    }
+
+    if (threadsRes.ok) {
+      const threadData = (await threadsRes.json()) as { threads: MessageThreadListEntry[] };
+      setThreads(threadData.threads ?? []);
+      if (activeThreadId && !threadData.threads.some((thread) => thread.id === activeThreadId)) {
+        setActiveThreadId(threadData.threads[0]?.id ?? null);
+      }
     }
   }
 
@@ -307,60 +261,69 @@ export default function CandidateDashboardPage() {
     }
 
     setSaving(true);
-    setSaveMessage(null);
+    setSuccess(null);
     setError(null);
 
     const payload = {
-      ...profile,
-      availableFrom: profile.availableFrom
-        ? new Date(`${formatDateForInput(profile.availableFrom)}T00:00:00.000Z`).toISOString()
-        : null,
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      phone: profile.phone ?? "",
+      avatarUrl: profile.avatarUrl ?? "",
+      location: profile.location ?? "",
+      headline: profile.headline ?? "",
+      summary: profile.summary ?? "",
+      currentEmployer: profile.currentEmployer ?? "",
+      hideFromCurrentEmployer: profile.hideFromCurrentEmployer,
+      visibility: profile.visibility,
+      salaryMin: profile.salaryMin,
+      salaryMax: profile.salaryMax,
+      currency: profile.currency,
+      availableFrom: profile.availableFrom,
+      availabilityNote: profile.availabilityNote ?? "",
+      experienceYears: profile.experienceYears,
       skills: linesToList(skillsText),
-      preferredLocations: linesToList(preferredLocationsText),
-      preferredEmploymentTypes: linesToList(preferredEmploymentTypesText),
-      blockedCompanyIds: linesToList(blockedCompanyIdsText),
-      blockedManagerEmails: linesToList(blockedManagerEmailsText),
-      experiences: parseExperienceLines(experiencesText),
-      educations: parseEducationLines(educationsText),
-      certificates: parseCertificateLines(certificatesText),
-      portfolio: parsePortfolioLines(portfolioText),
+      experiences: profile.experiences,
+      educations: profile.educations,
+      certificates: profile.certificates,
+      portfolio: profile.portfolio,
+      preferredLocations: profile.preferredLocations,
+      preferredEmploymentTypes: profile.preferredEmploymentTypes,
+      blockedCompanyIds: profile.blockedCompanyIds,
+      blockedManagerEmails: profile.blockedManagerEmails,
     };
 
-    try {
-      const response = await fetch("/api/private/candidate/profile", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+    const response = await fetch("/api/private/candidate/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-      if (!response.ok) {
-        throw new Error("Speichern fehlgeschlagen.");
-      }
-
-      const updatedProfileResponse = await fetch("/api/private/candidate/profile");
-      if (updatedProfileResponse.ok) {
-        const updated = (await updatedProfileResponse.json()) as { profile: CandidateProfileResponse };
-        setProfile(updated.profile);
-      }
-
-      await refreshContactsAndMatches();
-      setSaveMessage("Profil wurde erfolgreich gespeichert.");
-    } catch (saveError) {
-      console.error(saveError);
-      setError("Speichern fehlgeschlagen.");
-    } finally {
+    if (!response.ok) {
+      setError("Profil konnte nicht gespeichert werden.");
       setSaving(false);
-    }
-  }
-
-  async function handleUpload() {
-    if (!fileToUpload) {
       return;
     }
 
-    setUploadMessage(null);
+    const profileRes = await fetch("/api/private/candidate/profile");
+    if (profileRes.ok) {
+      const profileData = (await profileRes.json()) as { profile: CandidateProfileResponse };
+      setProfile(profileData.profile);
+      setSkillsText(profileData.profile.skills.join("\n"));
+    }
+
+    setSuccess("Profil erfolgreich gespeichert.");
+    setSaving(false);
+  }
+
+  async function uploadAvatar(file: File | null) {
+    if (!file || !profile) {
+      return;
+    }
+
+    setUploading(true);
+    setError(null);
     const formData = new FormData();
-    formData.append("file", fileToUpload);
+    formData.append("file", file);
 
     const response = await fetch("/api/private/candidate/upload", {
       method: "POST",
@@ -369,30 +332,66 @@ export default function CandidateDashboardPage() {
     const data = await response.json();
 
     if (!response.ok) {
-      setUploadMessage(data?.error ?? "Upload fehlgeschlagen.");
+      setError(data?.error ?? "Bild-Upload fehlgeschlagen.");
+      setUploading(false);
       return;
     }
 
-    setPortfolioText((previous) =>
-      `${previous ? `${previous}\n` : ""}${data.originalName}|${data.url}|Upload über Plattform|file`,
-    );
-    setUploadMessage("Datei hochgeladen. Bitte Profil speichern.");
-    setFileToUpload(null);
+    setProfile((current) => (current ? { ...current, avatarUrl: data.url } : current));
+    setSuccess("Bild hochgeladen. Bitte Profil speichern.");
+    setUploading(false);
   }
 
-  async function updateContactStatus(
-    requestId: string,
-    status: typeof CONTACT_STATUS.ACCEPTED | typeof CONTACT_STATUS.DECLINED,
-  ) {
-    const response = await fetch("/api/private/candidate/contact-requests", {
-      method: "PATCH",
+  async function applyToJob(jobId: string) {
+    setSuccess(null);
+    setError(null);
+    const response = await fetch("/api/private/candidate/applications", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId, status }),
+      body: JSON.stringify({ jobPostingId: jobId }),
     });
 
-    if (response.ok) {
-      await refreshContactsAndMatches();
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data?.error ?? "Bewerbung konnte nicht angelegt werden.");
+      return;
     }
+
+    setSuccess("Bewerbung erfolgreich angelegt.");
+    await refreshJobsApplicationsAndThreads();
+    if (data.threadId) {
+      setActiveThreadId(data.threadId);
+    }
+    setActiveTab("applications");
+  }
+
+  async function sendMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!activeThreadId || !messageText.trim()) {
+      return;
+    }
+
+    const response = await fetch("/api/private/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        threadId: activeThreadId,
+        content: messageText.trim(),
+      }),
+    });
+
+    if (!response.ok) {
+      setError("Nachricht konnte nicht gesendet werden.");
+      return;
+    }
+
+    setMessageText("");
+    const threadRes = await fetch(`/api/private/messages/${activeThreadId}`);
+    if (threadRes.ok) {
+      const threadData = (await threadRes.json()) as ThreadResponse;
+      setThreadMessages(threadData.messages ?? []);
+    }
+    await refreshJobsApplicationsAndThreads();
   }
 
   async function exportData() {
@@ -416,7 +415,7 @@ export default function CandidateDashboardPage() {
 
   if (loading) {
     return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p className="text-sm text-zinc-600">Dashboard wird geladen...</p>
       </main>
     );
@@ -424,488 +423,470 @@ export default function CandidateDashboardPage() {
 
   if (!profile) {
     return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          Profil konnte nicht geladen werden.
+          Kandidatenprofil konnte nicht geladen werden.
         </p>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-8">
-      <section className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200 md:p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <main className="mx-auto max-w-6xl px-4 py-8">
+      <section className="rounded-3xl bg-gradient-to-br from-zinc-900 via-zinc-800 to-zinc-700 p-6 text-white shadow-lg">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Kandidaten-Dashboard</h1>
-            <p className="mt-1 text-sm text-zinc-600">
-              Pflege dein vollständiges Bewerbungsprofil und deine Sichtbarkeit.
+            <p className="text-xs uppercase tracking-[0.2em] text-zinc-300">Arbeitnehmer</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl">
+              Willkommen, {profile.firstName}
+            </h1>
+            <p className="mt-2 text-sm text-zinc-200">
+              Kommunikation läuft ausschließlich über die Plattform. E-Mail und Telefonnummer
+              werden nicht an Unternehmen ausgegeben.
             </p>
           </div>
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-2 text-sm">
-            Profilbewertung: <strong>{completionScore}%</strong>
+          <div className="rounded-2xl bg-white/10 px-4 py-3 text-sm backdrop-blur">
+            Sichtbarkeit: <strong>{profile.visibility}</strong>
           </div>
         </div>
       </section>
 
-      <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Persönliche Daten</h2>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Vorname
-              </span>
-              <input
-                value={profile.firstName}
-                onChange={(event) => setProfile((current) => (current ? { ...current, firstName: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Nachname
-              </span>
-              <input
-                value={profile.lastName}
-                onChange={(event) => setProfile((current) => (current ? { ...current, lastName: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block sm:col-span-2">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Headline
-              </span>
-              <input
-                value={profile.headline ?? ""}
-                onChange={(event) => setProfile((current) => (current ? { ...current, headline: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                placeholder="z. B. Senior Java Developerin"
-              />
-            </label>
-            <label className="block sm:col-span-2">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Kurzprofil
-              </span>
-              <textarea
-                value={profile.summary ?? ""}
-                onChange={(event) => setProfile((current) => (current ? { ...current, summary: event.target.value } : current))}
-                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Standort
-              </span>
-              <input
-                value={profile.location ?? ""}
-                onChange={(event) => setProfile((current) => (current ? { ...current, location: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Telefon
-              </span>
-              <input
-                value={profile.phone ?? ""}
-                onChange={(event) => setProfile((current) => (current ? { ...current, phone: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Jahre Berufserfahrung
-              </span>
-              <input
-                type="number"
-                min={0}
-                value={profile.experienceYears}
-                onChange={(event) =>
-                  setProfile((current) =>
-                    current ? { ...current, experienceYears: Number(event.target.value) || 0 } : current,
-                  )
-                }
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Aktueller Arbeitgeber
-              </span>
-              <input
-                value={profile.currentEmployer ?? ""}
-                onChange={(event) => setProfile((current) => (current ? { ...current, currentEmployer: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-          </div>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Gehalt, Verfügbarkeit & Sichtbarkeit</h2>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Gehalt min.
-              </span>
-              <input
-                type="number"
-                value={profile.salaryMin ?? ""}
-                onChange={(event) =>
-                  setProfile((current) =>
-                    current
-                      ? { ...current, salaryMin: event.target.value ? Number(event.target.value) : null }
-                      : current,
-                  )
-                }
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Gehalt max.
-              </span>
-              <input
-                type="number"
-                value={profile.salaryMax ?? ""}
-                onChange={(event) =>
-                  setProfile((current) =>
-                    current
-                      ? { ...current, salaryMax: event.target.value ? Number(event.target.value) : null }
-                      : current,
-                  )
-                }
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Währung
-              </span>
-              <input
-                value={profile.currency}
-                onChange={(event) => setProfile((current) => (current ? { ...current, currency: event.target.value } : current))}
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm uppercase outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Verfügbar ab
-              </span>
-              <input
-                type="date"
-                value={formatDateForInput(profile.availableFrom)}
-                onChange={(event) =>
-                  setProfile((current) => (current ? { ...current, availableFrom: event.target.value || null } : current))
-                }
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block sm:col-span-2">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Verfügbarkeitsnotiz
-              </span>
-              <input
-                value={profile.availabilityNote ?? ""}
-                onChange={(event) =>
-                  setProfile((current) => (current ? { ...current, availabilityNote: event.target.value } : current))
-                }
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                placeholder="z. B. 4 Wochen Kündigungsfrist"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Sichtbarkeitsstatus
-              </span>
-              <select
-                value={profile.visibility}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                  setProfile((current) =>
-                    current
-                      ? { ...current, visibility: event.target.value as VisibilityStatusValue }
-                      : current,
-                  )
-                }
-                className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              >
-                <option value={VISIBILITY_STATUS.ACTIVE_SEARCH}>Aktiv suchend</option>
-                <option value={VISIBILITY_STATUS.OPEN_TO_OFFERS}>Offen für Angebote</option>
-                <option value={VISIBILITY_STATUS.HIDDEN}>Unsichtbar</option>
-              </select>
-            </label>
-            <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm sm:mt-6">
-              <input
-                type="checkbox"
-                checked={profile.hideFromCurrentEmployer}
-                onChange={(event) =>
-                  setProfile((current) =>
-                    current ? { ...current, hideFromCurrentEmployer: event.target.checked } : current,
-                  )
-                }
-              />
-              Aktueller Arbeitgeber darf Profil nicht sehen
-            </label>
-          </div>
-        </article>
+      <section className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
+        <div className="grid gap-2 md:grid-cols-4">
+          {[
+            { key: "jobs", label: "Offene Stellen" },
+            { key: "applications", label: "Bewerbungen" },
+            { key: "messages", label: "Nachrichten" },
+            { key: "profile", label: "Profil" },
+          ].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key as CandidateTab)}
+              className={`rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+                activeTab === tab.key
+                  ? "bg-zinc-900 text-white"
+                  : "text-zinc-700 hover:bg-zinc-100"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </section>
 
-      <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Skills & Präferenzen</h2>
-          <div className="mt-4 space-y-3">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Skills (eine Zeile pro Skill)
-              </span>
-              <textarea
-                value={skillsText}
-                onChange={(event) => setSkillsText(event.target.value)}
-                className="h-28 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Bevorzugte Standorte (eine Zeile pro Standort)
-              </span>
-              <textarea
-                value={preferredLocationsText}
-                onChange={(event) => setPreferredLocationsText(event.target.value)}
-                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Bevorzugte Arbeitsmodelle (eine Zeile pro Modell)
-              </span>
-              <textarea
-                value={preferredEmploymentTypesText}
-                onChange={(event) => setPreferredEmploymentTypesText(event.target.value)}
-                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-                placeholder="Vollzeit, Teilzeit, Hybrid, Remote ..."
-              />
-            </label>
-          </div>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Privatsphäre-Einstellungen</h2>
-          <div className="mt-4 space-y-3">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Blockierte Unternehmen (Company-IDs, je Zeile)
-              </span>
-              <textarea
-                value={blockedCompanyIdsText}
-                onChange={(event) => setBlockedCompanyIdsText(event.target.value)}
-                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Blockierte Geschäftsführer (E-Mails, je Zeile)
-              </span>
-              <textarea
-                value={blockedManagerEmailsText}
-                onChange={(event) => setBlockedManagerEmailsText(event.target.value)}
-                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-          </div>
-        </article>
-      </section>
-
-      <section className="mt-4 grid gap-4 xl:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Berufserfahrung & Ausbildung</h2>
-          <div className="mt-4 space-y-3">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Berufserfahrung (Firma|Rolle|Start|Ende|Beschreibung)
-              </span>
-              <textarea
-                value={experiencesText}
-                onChange={(event) => setExperiencesText(event.target.value)}
-                className="h-32 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Ausbildung (Institution|Abschluss|Fach|Startjahr|Endjahr)
-              </span>
-              <textarea
-                value={educationsText}
-                onChange={(event) => setEducationsText(event.target.value)}
-                className="h-28 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-          </div>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Zertifikate & Portfolio</h2>
-          <div className="mt-4 space-y-3">
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Zertifikate (Name|Aussteller|Jahr|URL)
-              </span>
-              <textarea
-                value={certificatesText}
-                onChange={(event) => setCertificatesText(event.target.value)}
-                className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Portfolio (Titel|URL/Pfad|Beschreibung|Typ[link/file])
-              </span>
-              <textarea
-                value={portfolioText}
-                onChange={(event) => setPortfolioText(event.target.value)}
-                className="h-28 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
-              />
-            </label>
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-              <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-                Portfolio-Datei hochladen
-              </p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <input
-                  type="file"
-                  onChange={(event) => setFileToUpload(event.target.files?.[0] ?? null)}
-                  className="text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={handleUpload}
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-zinc-100"
-                >
-                  Datei hochladen
-                </button>
-              </div>
-              {uploadMessage ? <p className="mt-2 text-xs text-zinc-700">{uploadMessage}</p> : null}
-            </div>
-          </div>
-        </article>
-      </section>
-
-      <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-        {error ? (
-          <p className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            {error}
-          </p>
-        ) : null}
-        {saveMessage ? (
-          <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {saveMessage}
-          </p>
-        ) : null}
-        <button
-          type="button"
-          onClick={saveProfile}
-          disabled={saving}
-          className="rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-700 disabled:opacity-60"
-        >
-          {saving ? "Speichert..." : "Profil speichern"}
-        </button>
-      </section>
-
-      <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Passende Jobvorschläge</h2>
-          <p className="mt-1 text-sm text-zinc-600">KI-Matching-Score auf Basis von Skills, Erfahrung und Präferenzen.</p>
-          <div className="mt-4 space-y-3">
-            {matches.length ? (
-              matches.map((match) => (
-                <div key={match.jobId} className="rounded-xl border border-zinc-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="font-medium">{match.title}</p>
-                      <p className="text-sm text-zinc-600">{match.companyName}</p>
-                    </div>
-                    <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white">
-                      {match.score}%
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs text-zinc-500">
-                    {match.remote ? "Remote möglich" : match.location ?? "Standort offen"} ·{" "}
-                    {match.requiredSkills.join(", ") || "Keine Pflichtskills"}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">Noch keine passenden Jobvorschläge gefunden.</p>
-            )}
-          </div>
-        </article>
-
-        <article className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-          <h2 className="text-lg font-semibold">Kontaktanfragen</h2>
-          <p className="mt-1 text-sm text-zinc-600">Direkte Nachrichten von Unternehmen.</p>
-          <div className="mt-4 space-y-3">
-            {contacts.length ? (
-              contacts.map((request) => (
-                <div key={request.id} className="rounded-xl border border-zinc-200 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="font-medium">{request.companyName}</p>
-                    <span className="rounded-full border border-zinc-300 px-2.5 py-1 text-xs font-medium">
-                      {request.status}
-                    </span>
-                  </div>
-                  {request.jobTitle ? (
-                    <p className="mt-1 text-xs text-zinc-500">Bezug: {request.jobTitle}</p>
-                  ) : null}
-                  <p className="mt-2 text-sm text-zinc-700">{request.message}</p>
-                  {request.status === CONTACT_STATUS.PENDING ? (
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => updateContactStatus(request.id, CONTACT_STATUS.ACCEPTED)}
-                        className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500"
-                      >
-                        Annehmen
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updateContactStatus(request.id, CONTACT_STATUS.DECLINED)}
-                        className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-                      >
-                        Ablehnen
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-zinc-600">Noch keine Kontaktanfragen vorhanden.</p>
-            )}
-          </div>
-        </article>
-      </section>
-
-      <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-zinc-200">
-        <h2 className="text-lg font-semibold">DSGVO & Datenrechte</h2>
-        <p className="mt-1 text-sm text-zinc-600">
-          Datenexport als JSON und Löschung des Kontos sind jederzeit möglich.
+      {error ? (
+        <p className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+          {error}
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={exportData}
-            className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100"
-          >
-            Datenexport herunterladen
-          </button>
-          <button
-            type="button"
-            onClick={deleteAccount}
-            className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
-          >
-            Konto dauerhaft löschen
-          </button>
-        </div>
-      </section>
+      ) : null}
+      {success ? (
+        <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {success}
+        </p>
+      ) : null}
+
+      {activeTab === "jobs" ? (
+        <section className="mt-4 space-y-3">
+          <h2 className="text-xl font-semibold tracking-tight">Unternehmen mit offenen Stellen</h2>
+          {openJobs.length ? (
+            openJobs.map((job) => (
+              <article key={job.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold">{job.title}</p>
+                    <p className="text-sm text-zinc-600">{job.companyName}</p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {job.remote ? "Remote möglich" : job.location ?? "Standort offen"} ·{" "}
+                      {formatMoney(job.salaryMin, job.salaryMax, job.currency)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={job.hasApplied}
+                    onClick={() => applyToJob(job.id)}
+                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                      job.hasApplied
+                        ? "cursor-not-allowed border border-zinc-300 bg-zinc-100 text-zinc-500"
+                        : "bg-zinc-900 text-white hover:bg-zinc-700"
+                    }`}
+                  >
+                    {job.hasApplied
+                      ? `Bereits beworben (${job.applicationStage ?? "APPLIED"})`
+                      : "Jetzt bewerben"}
+                  </button>
+                </div>
+                <p className="mt-3 text-sm text-zinc-700">{job.description ?? "Keine Beschreibung."}</p>
+                <p className="mt-2 text-xs text-zinc-500">
+                  Skills: {job.requiredSkills.join(", ") || "keine Angabe"}
+                </p>
+              </article>
+            ))
+          ) : (
+            <p className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-600">
+              Aktuell sind keine offenen Stellen sichtbar.
+            </p>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === "applications" ? (
+        <section className="mt-4">
+          <h2 className="text-xl font-semibold tracking-tight">Bewerbungen</h2>
+          <p className="mt-1 text-sm text-zinc-600">
+            Status-Board deiner Bewerbungen. Unternehmen können dich per Drag-and-drop zwischen den
+            Phasen verschieben.
+          </p>
+          <div className="mt-4 grid gap-3 xl:grid-cols-5">
+            {APPLICATION_STAGES.map((stage) => (
+              <div key={stage} className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm">
+                <h3 className="text-sm font-semibold">{APPLICATION_STAGE_LABELS[stage]}</h3>
+                <div className="mt-3 space-y-2">
+                  {groupedApplications[stage].length ? (
+                    groupedApplications[stage].map((application) => (
+                      <div key={application.id} className="rounded-xl border border-zinc-200 p-3">
+                        <p className="text-sm font-medium">{application.jobTitle}</p>
+                        <p className="text-xs text-zinc-600">{application.companyName}</p>
+                        <p className="mt-1 text-[11px] text-zinc-500">
+                          Aktualisiert: {new Date(application.updatedAt).toLocaleDateString("de-DE")}
+                        </p>
+                        {application.threadId ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveThreadId(application.threadId);
+                              setActiveTab("messages");
+                            }}
+                            className="mt-2 rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium hover:bg-zinc-100"
+                          >
+                            Nachricht öffnen
+                          </button>
+                        ) : null}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-zinc-500">Keine Einträge</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === "messages" ? (
+        <section className="mt-4 grid gap-4 lg:grid-cols-[320px,1fr]">
+          <article className="rounded-2xl border border-zinc-200 bg-white p-3 shadow-sm">
+            <h2 className="px-2 pb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500">
+              Nachrichten
+            </h2>
+            <div className="space-y-2">
+              {threads.length ? (
+                threads.map((thread) => (
+                  <button
+                    key={thread.id}
+                    type="button"
+                    onClick={() => setActiveThreadId(thread.id)}
+                    className={`w-full rounded-xl border p-3 text-left transition ${
+                      activeThreadId === thread.id
+                        ? "border-zinc-900 bg-zinc-900 text-white"
+                        : "border-zinc-200 bg-white hover:bg-zinc-50"
+                    }`}
+                  >
+                    <p className="text-sm font-medium">{thread.company.name}</p>
+                    <p
+                      className={`mt-0.5 text-xs ${
+                        activeThreadId === thread.id ? "text-zinc-300" : "text-zinc-600"
+                      }`}
+                    >
+                      {thread.jobTitle ?? "Allgemeiner Chat"}
+                    </p>
+                    {thread.latestMessage ? (
+                      <p
+                        className={`mt-1 line-clamp-2 text-xs ${
+                          activeThreadId === thread.id ? "text-zinc-300" : "text-zinc-500"
+                        }`}
+                      >
+                        {thread.latestMessage.content}
+                      </p>
+                    ) : null}
+                  </button>
+                ))
+              ) : (
+                <p className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-600">
+                  Noch keine Nachrichten.
+                </p>
+              )}
+            </div>
+          </article>
+          <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            {activeThread ? (
+              <>
+                <div className="border-b border-zinc-200 pb-3">
+                  <p className="text-sm font-semibold">{activeThread.company.name}</p>
+                  <p className="text-xs text-zinc-500">{activeThread.jobTitle ?? "Allgemeiner Chat"}</p>
+                </div>
+                <div className="mt-3 h-[380px] space-y-2 overflow-y-auto rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                  {threadMessages.length ? (
+                    threadMessages.map((message) => (
+                      <div
+                        key={message.id}
+                        className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
+                          message.senderRole === "CANDIDATE"
+                            ? "ml-auto bg-zinc-900 text-white"
+                            : "bg-white text-zinc-800"
+                        }`}
+                      >
+                        <p>{message.content}</p>
+                        <p
+                          className={`mt-1 text-[11px] ${
+                            message.senderRole === "CANDIDATE" ? "text-zinc-300" : "text-zinc-500"
+                          }`}
+                        >
+                          {new Date(message.createdAt).toLocaleString("de-DE")}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-zinc-500">Noch keine Nachrichten in diesem Chat.</p>
+                  )}
+                </div>
+                <form onSubmit={sendMessage} className="mt-3 flex gap-2">
+                  <input
+                    value={messageText}
+                    onChange={(event) => setMessageText(event.target.value)}
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                    placeholder="Nachricht schreiben..."
+                  />
+                  <button
+                    type="submit"
+                    className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+                  >
+                    Senden
+                  </button>
+                </form>
+              </>
+            ) : (
+              <p className="text-sm text-zinc-600">Wähle links einen Chat aus.</p>
+            )}
+          </article>
+        </section>
+      ) : null}
+
+      {activeTab === "profile" ? (
+        <section className="mt-4 space-y-4">
+          <article className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+            <h2 className="text-xl font-semibold tracking-tight">Profil & Sichtbarkeit</h2>
+            <div className="mt-4 grid gap-4 lg:grid-cols-[220px,1fr]">
+              <div className="space-y-3">
+                <div className="flex h-36 w-36 items-center justify-center overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-100 text-2xl font-semibold text-zinc-500">
+                  {profile.avatarUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={profile.avatarUrl} alt="Profilbild" className="h-full w-full object-cover" />
+                  ) : (
+                    <span>{profile.firstName.slice(0, 1)}{profile.lastName.slice(0, 1)}</span>
+                  )}
+                </div>
+                <label className="block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Profilbild hochladen
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => void uploadAvatar(event.target.files?.[0] ?? null)}
+                    className="mt-2 block w-full text-sm"
+                    disabled={uploading}
+                  />
+                </label>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Vorname
+                  </span>
+                  <input
+                    value={profile.firstName}
+                    onChange={(event) =>
+                      setProfile((current) => (current ? { ...current, firstName: event.target.value } : current))
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Nachname
+                  </span>
+                  <input
+                    value={profile.lastName}
+                    onChange={(event) =>
+                      setProfile((current) => (current ? { ...current, lastName: event.target.value } : current))
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Headline
+                  </span>
+                  <input
+                    value={profile.headline ?? ""}
+                    onChange={(event) =>
+                      setProfile((current) => (current ? { ...current, headline: event.target.value } : current))
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                    placeholder="z. B. Senior Frontend Engineer"
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Kurzprofil
+                  </span>
+                  <textarea
+                    value={profile.summary ?? ""}
+                    onChange={(event) =>
+                      setProfile((current) => (current ? { ...current, summary: event.target.value } : current))
+                    }
+                    className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Standort
+                  </span>
+                  <input
+                    value={profile.location ?? ""}
+                    onChange={(event) =>
+                      setProfile((current) => (current ? { ...current, location: event.target.value } : current))
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Jahre Erfahrung
+                  </span>
+                  <input
+                    type="number"
+                    min={0}
+                    value={profile.experienceYears}
+                    onChange={(event) =>
+                      setProfile((current) =>
+                        current ? { ...current, experienceYears: Number(event.target.value) || 0 } : current,
+                      )
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Gehalt min.
+                  </span>
+                  <input
+                    type="number"
+                    value={profile.salaryMin ?? ""}
+                    onChange={(event) =>
+                      setProfile((current) =>
+                        current
+                          ? {
+                              ...current,
+                              salaryMin: event.target.value ? Number(event.target.value) : null,
+                            }
+                          : current,
+                      )
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Gehalt max.
+                  </span>
+                  <input
+                    type="number"
+                    value={profile.salaryMax ?? ""}
+                    onChange={(event) =>
+                      setProfile((current) =>
+                        current
+                          ? {
+                              ...current,
+                              salaryMax: event.target.value ? Number(event.target.value) : null,
+                            }
+                          : current,
+                      )
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Skills (eine Zeile pro Skill)
+                  </span>
+                  <textarea
+                    value={skillsText}
+                    onChange={(event) => setSkillsText(event.target.value)}
+                    className="h-24 w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Sichtbarkeit
+                  </span>
+                  <select
+                    value={profile.visibility}
+                    onChange={(event) =>
+                      setProfile((current) =>
+                        current
+                          ? { ...current, visibility: event.target.value as VisibilityStatusValue }
+                          : current,
+                      )
+                    }
+                    className="w-full rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                  >
+                    <option value={VISIBILITY_STATUS.ACTIVE_SEARCH}>Aktiv suchend</option>
+                    <option value={VISIBILITY_STATUS.OPEN_TO_OFFERS}>Offen für Angebote</option>
+                    <option value={VISIBILITY_STATUS.HIDDEN}>Unsichtbar</option>
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm md:mt-6">
+                  <input
+                    type="checkbox"
+                    checked={profile.hideFromCurrentEmployer}
+                    onChange={(event) =>
+                      setProfile((current) =>
+                        current ? { ...current, hideFromCurrentEmployer: event.target.checked } : current,
+                      )
+                    }
+                  />
+                  Aktueller Arbeitgeber darf Profil nicht sehen
+                </label>
+              </div>
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={saveProfile}
+                disabled={saving}
+                className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-60"
+              >
+                {saving ? "Speichert..." : "Profil speichern"}
+              </button>
+              <button
+                type="button"
+                onClick={exportData}
+                className="rounded-xl border border-zinc-300 px-4 py-2 text-sm font-medium hover:bg-zinc-100"
+              >
+                Datenexport
+              </button>
+              <button
+                type="button"
+                onClick={deleteAccount}
+                className="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100"
+              >
+                Konto löschen
+              </button>
+            </div>
+          </article>
+        </section>
+      ) : null}
     </main>
   );
 }

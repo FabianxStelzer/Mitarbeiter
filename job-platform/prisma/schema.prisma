@@ -29,6 +29,19 @@ enum ContactStatus {
   DECLINED
 }
 
+enum ApplicationStage {
+  APPLIED
+  INVITED
+  INTERVIEWS
+  HIRED
+  REJECTED
+}
+
+enum MessageSenderRole {
+  CANDIDATE
+  COMPANY
+}
+
 model User {
   id            String          @id @default(cuid())
   email         String          @unique
@@ -46,6 +59,7 @@ model CandidateProfile {
   firstName                   String
   lastName                    String
   phone                       String?
+  avatarUrl                   String?
   location                    String?
   headline                    String?
   summary                     String?
@@ -73,6 +87,8 @@ model CandidateProfile {
   user                        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   favorites                   FavoriteCandidate[]
   contactRequests             ContactRequest[]
+  applications                Application[]
+  messageThreads              MessageThread[]   @relation("CandidateThreads")
 }
 
 model CompanyProfile {
@@ -93,6 +109,8 @@ model CompanyProfile {
   jobs                 JobPosting[]
   favorites            FavoriteCandidate[]
   contactRequests      ContactRequest[]
+  applications         Application[]
+  messageThreads       MessageThread[]    @relation("CompanyThreads")
 }
 
 model JobPosting {
@@ -114,6 +132,7 @@ model JobPosting {
   updatedAt          DateTime       @updatedAt
   company            CompanyProfile @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
   contactRequests    ContactRequest[]
+  applications       Application[]
 }
 
 model FavoriteCandidate {
@@ -139,4 +158,46 @@ model ContactRequest {
   company            CompanyProfile   @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
   candidate          CandidateProfile @relation(fields: [candidateProfileId], references: [id], onDelete: Cascade)
   jobPosting         JobPosting?      @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+}
+
+model Application {
+  id                 String           @id @default(cuid())
+  candidateProfileId String
+  companyProfileId   String
+  jobPostingId       String
+  stage              ApplicationStage @default(APPLIED)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  candidate          CandidateProfile @relation(fields: [candidateProfileId], references: [id], onDelete: Cascade)
+  company            CompanyProfile   @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+  jobPosting         JobPosting       @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  thread             MessageThread?
+
+  @@unique([candidateProfileId, jobPostingId])
+}
+
+model MessageThread {
+  id                 String           @id @default(cuid())
+  candidateProfileId String
+  companyProfileId   String
+  applicationId      String?          @unique
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  candidate          CandidateProfile @relation("CandidateThreads", fields: [candidateProfileId], references: [id], onDelete: Cascade)
+  company            CompanyProfile   @relation("CompanyThreads", fields: [companyProfileId], references: [id], onDelete: Cascade)
+  application        Application?     @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  messages           Message[]
+
+  @@index([candidateProfileId, companyProfileId])
+}
+
+model Message {
+  id         String            @id @default(cuid())
+  threadId   String
+  senderRole MessageSenderRole
+  senderUserId String
+  content    String
+  createdAt  DateTime          @default(now())
+  readAt     DateTime?
+  thread     MessageThread     @relation(fields: [threadId], references: [id], onDelete: Cascade)
 }
