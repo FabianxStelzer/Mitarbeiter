@@ -71,7 +71,9 @@ npm run db:seed
 npm run dev
 ```
 
-App öffnen: `http://localhost:3000`
+App öffnen: `http://localhost:8080`
+
+> Hinweis: Falls bereits eine `.env` existiert, setze `NEXTAUTH_URL` auf `http://localhost:8080`.
 
 ### Demo-Logins (nach Seed)
 

@@ -16,6 +16,6 @@ npm run db:seed
 npm run dev
 ```
 
-Danach: `http://localhost:3000`
+Danach: `http://localhost:8080`
 
 Mehr Details siehe `job-platform/README.md`.
