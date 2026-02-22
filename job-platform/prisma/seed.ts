@@ -1,7 +1,17 @@
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import bcrypt from "bcryptjs";
 import { PrismaClient, UserRole, VisibilityStatus, VerificationStatus } from "@prisma/client";
 
-const prisma = new PrismaClient();
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL ist nicht gesetzt.");
+}
+
+const adapter = new PrismaBetterSqlite3({
+  url: databaseUrl,
+});
+
+const prisma = new PrismaClient({ adapter });
 
 async function main() {
   const candidatePasswordHash = await bcrypt.hash("Kandidat123!", 12);

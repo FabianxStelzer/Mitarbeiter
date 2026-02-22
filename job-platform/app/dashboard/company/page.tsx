@@ -3,13 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { signOut } from "next-auth/react";
 
-const CONTACT_STATUS = {
-  PENDING: "PENDING",
-  ACCEPTED: "ACCEPTED",
-  DECLINED: "DECLINED",
-} as const;
-
-type ContactStatusValue = (typeof CONTACT_STATUS)[keyof typeof CONTACT_STATUS];
+type ContactStatusValue = "PENDING" | "ACCEPTED" | "DECLINED";
 
 const VERIFICATION_STATUS = {
   UNVERIFIED: "UNVERIFIED",
@@ -203,7 +197,13 @@ export default function CompanyDashboardPage() {
           setContacts(contactsData.requests ?? []);
         }
 
-        await runSearch();
+        const initialSearchResponse = await fetch("/api/private/company/candidates");
+        if (initialSearchResponse.ok) {
+          const initialSearchData = (await initialSearchResponse.json()) as {
+            results: CandidateSearchResult[];
+          };
+          setSearchResults(initialSearchData.results ?? []);
+        }
       } catch (loadError) {
         console.error(loadError);
         setError("Dashboard konnte nicht geladen werden.");

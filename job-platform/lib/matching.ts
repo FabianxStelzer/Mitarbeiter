@@ -94,9 +94,10 @@ export function matchesCompanyFilters(
   }
 
   if (filters.location) {
+    const locationFilter = filters.location;
     const locationMatch =
-      textIncludes(candidate.location, filters.location) ||
-      preferredLocations.some((location) => textIncludes(location, filters.location));
+      textIncludes(candidate.location, locationFilter) ||
+      preferredLocations.some((location) => textIncludes(location, locationFilter));
     if (!locationMatch) {
       return false;
     }
@@ -157,10 +158,11 @@ function getLocationScore(candidate: CandidateProfile, job: JobPosting): number 
     return 0.7;
   }
 
+  const jobLocation = job.location;
   const preferredLocations = getCandidatePreferredLocations(candidate);
   if (
-    textIncludes(candidate.location, job.location) ||
-    preferredLocations.some((location) => textIncludes(location, job.location))
+    textIncludes(candidate.location, jobLocation) ||
+    preferredLocations.some((location) => textIncludes(location, jobLocation))
   ) {
     return 1;
   }
