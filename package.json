@@ -1,0 +1,14 @@
+{
+  "name": "mitarbeiter-plattform-root",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix job-platform run dev",
+    "build": "npm --prefix job-platform run build",
+    "start": "npm --prefix job-platform run start",
+    "lint": "npm --prefix job-platform run lint",
+    "db:generate": "npm --prefix job-platform run db:generate",
+    "db:push": "npm --prefix job-platform run db:push",
+    "db:seed": "npm --prefix job-platform run db:seed",
+    "db:studio": "npm --prefix job-platform run db:studio"
+  }
+}
