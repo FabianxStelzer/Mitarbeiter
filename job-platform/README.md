@@ -88,3 +88,11 @@ App öffnen: `http://localhost:8080`
 - `npm run db:push` – Prisma-Schema anwenden
 - `npm run db:seed` – Demodaten einspielen
 - `npm run db:studio` – Prisma Studio
+
+## Fehlerbehebung
+
+Falls im Browser die Meldung **`missing required error components, refreshing...`** erscheint:
+
+1. Dev-Server stoppen
+2. Build-Cache löschen: `rm -rf .next`
+3. Server neu starten: `npm run dev`

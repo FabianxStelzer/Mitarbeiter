@@ -1,0 +1,37 @@
+"use client";
+
+import { useEffect } from "react";
+
+type ErrorPageProps = {
+  error: Error & { digest?: string };
+  reset: () => void;
+};
+
+export default function ErrorPage({ error, reset }: ErrorPageProps) {
+  useEffect(() => {
+    console.error("App-Fehler:", error);
+  }, [error]);
+
+  return (
+    <main className="mx-auto w-full max-w-3xl px-4 py-12">
+      <section className="rounded-2xl border border-rose-200 bg-white p-6 shadow-sm">
+        <p className="inline-flex rounded-full bg-rose-100 px-3 py-1 text-xs font-medium text-rose-700">
+          Fehler
+        </p>
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight">
+          Etwas ist schiefgelaufen.
+        </h1>
+        <p className="mt-2 text-sm text-zinc-600">
+          Bitte versuche es erneut. Wenn der Fehler bestehen bleibt, lade die Seite neu.
+        </p>
+        <button
+          type="button"
+          onClick={reset}
+          className="mt-5 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-700"
+        >
+          Erneut versuchen
+        </button>
+      </section>
+    </main>
+  );
+}
