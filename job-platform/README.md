@@ -104,3 +104,11 @@ Falls im Browser die Meldung **`missing required error components, refreshing...
 1. Dev-Server stoppen
 2. Build-Cache löschen: `rm -rf .next`
 3. Server neu starten: `npm run dev`
+
+Wenn Änderungen nicht sichtbar sind:
+
+1. Sicherstellen, dass der neueste Stand gezogen wurde: `git pull`
+2. „Frischen“ Start nutzen: `npm run dev:fresh`
+3. Version prüfen: `http://localhost:8080/api/version`
+
+Die JSON-Antwort muss den aktuellen Commit zeigen (z. B. `131cc0e` oder neuer).

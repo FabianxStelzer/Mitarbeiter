@@ -33,3 +33,13 @@ npm run dev
 ```
 
 Die Skripte leiten intern an `job-platform/` weiter und vermeiden typische 404-Fehler durch Start im falschen Ordner.
+
+Wenn Änderungen nicht sichtbar sind, nutze:
+
+```bash
+npm run dev:fresh
+```
+
+und prüfe anschließend:
+
+- `http://localhost:8080/api/version`

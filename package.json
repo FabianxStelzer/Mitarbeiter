@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "npm --prefix job-platform run dev",
+    "dev:fresh": "npm --prefix job-platform run dev:fresh",
     "build": "npm --prefix job-platform run build",
     "start": "npm --prefix job-platform run start",
     "lint": "npm --prefix job-platform run lint",
