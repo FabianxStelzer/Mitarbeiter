@@ -23,6 +23,17 @@ function getPidsOnPort(port) {
   }
 }
 
+function getPortDetails(port) {
+  try {
+    return execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN`, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
 function killPids(pids) {
   for (const pid of pids) {
     try {
@@ -32,6 +43,16 @@ function killPids(pids) {
       // Prozess existiert ggf. nicht mehr – ignorieren.
     }
   }
+}
+
+async function waitForPortToBeFree(port, attempts = 12, delayMs = 250) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!getPidsOnPort(port).length) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return false;
 }
 
 function clearNextCache() {
@@ -55,12 +76,28 @@ function startDevServer() {
   });
 }
 
-const pids = getPidsOnPort(8080);
-if (pids.length) {
-  killPids(pids);
-} else {
-  console.log("Kein belegter Prozess auf Port 8080 gefunden.");
+async function main() {
+  const pids = getPidsOnPort(8080);
+  if (pids.length) {
+    killPids(pids);
+  } else {
+    console.log("Kein belegter Prozess auf Port 8080 gefunden.");
+  }
+
+  const isFree = await waitForPortToBeFree(8080);
+  if (!isFree) {
+    console.error("Port 8080 ist weiterhin belegt. Bitte Prozess manuell beenden.");
+    const details = getPortDetails(8080);
+    if (details) {
+      console.error(details);
+    } else {
+      console.error("Keine Prozessdetails verfügbar.");
+    }
+    process.exit(1);
+  }
+
+  clearNextCache();
+  startDevServer();
 }
 
-clearNextCache();
-startDevServer();
+main();

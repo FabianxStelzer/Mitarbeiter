@@ -43,3 +43,9 @@ npm run dev:fresh
 und prüfe anschließend:
 
 - `http://localhost:8080/api/version`
+
+Bei wiederholten Terminalfehlern:
+
+```bash
+npm run doctor
+```

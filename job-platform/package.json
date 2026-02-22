@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 8080",
     "dev:fresh": "node scripts/dev-fresh.mjs",
+    "doctor": "node scripts/doctor.mjs",
     "build": "next build",
     "start": "next start -p 8080",
     "lint": "eslint",
