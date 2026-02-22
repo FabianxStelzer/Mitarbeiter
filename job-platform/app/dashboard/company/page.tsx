@@ -8,7 +8,7 @@ import {
   type ApplicationStageValue,
 } from "@/lib/applications";
 
-type CompanyTab = "jobs" | "candidates" | "applications" | "messages" | "profile";
+type CompanyTab = "jobs" | "candidates" | "applications" | "favorites" | "messages" | "profile";
 type VerificationStatusValue = "UNVERIFIED" | "PENDING" | "VERIFIED";
 
 type CompanyProfile = {
@@ -57,6 +57,18 @@ type CandidateSearchResult = {
   skills: string[];
   score: number;
   isFavorite: boolean;
+};
+
+type CompanyFavorite = {
+  id: string;
+  candidateId: string;
+  name: string;
+  avatarUrl: string | null;
+  headline: string | null;
+  location: string | null;
+  experienceYears: number;
+  skills: string[];
+  scoreHint?: string;
 };
 
 type CompanyApplication = {
@@ -124,10 +136,11 @@ function formatMoney(min: number | null, max: number | null, currency: string) {
 }
 
 export default function CompanyDashboardPage() {
-  const [activeTab, setActiveTab] = useState<CompanyTab>("applications");
+  const [activeTab, setActiveTab] = useState<CompanyTab>("candidates");
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
   const [jobs, setJobs] = useState<JobPosting[]>([]);
   const [candidates, setCandidates] = useState<CandidateSearchResult[]>([]);
+  const [favorites, setFavorites] = useState<CompanyFavorite[]>([]);
   const [applications, setApplications] = useState<CompanyApplication[]>([]);
   const [threads, setThreads] = useState<MessageThreadListEntry[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -187,13 +200,15 @@ export default function CompanyDashboardPage() {
       setLoading(true);
       setError(null);
       try {
-        const [profileRes, jobsRes, candidatesRes, applicationsRes, threadsRes] = await Promise.all([
+        const [profileRes, jobsRes, candidatesRes, favoritesRes, applicationsRes, threadsRes] =
+          await Promise.all([
           fetch("/api/private/company/profile"),
           fetch("/api/private/company/jobs"),
           fetch("/api/private/company/candidates"),
+          fetch("/api/private/company/favorites"),
           fetch("/api/private/company/applications"),
           fetch("/api/private/messages"),
-        ]);
+          ]);
 
         if (!profileRes.ok) {
           throw new Error("Unternehmensprofil konnte nicht geladen werden.");
@@ -210,6 +225,11 @@ export default function CompanyDashboardPage() {
         if (candidatesRes.ok) {
           const candidateData = (await candidatesRes.json()) as { results: CandidateSearchResult[] };
           setCandidates(candidateData.results ?? []);
+        }
+
+        if (favoritesRes.ok) {
+          const favoriteData = (await favoritesRes.json()) as { favorites: CompanyFavorite[] };
+          setFavorites(favoriteData.favorites ?? []);
         }
 
         if (applicationsRes.ok) {
@@ -254,9 +274,10 @@ export default function CompanyDashboardPage() {
   }, [activeThreadId]);
 
   async function refreshCompanyData() {
-    const [jobsRes, candidatesRes, applicationsRes, threadsRes] = await Promise.all([
+    const [jobsRes, candidatesRes, favoritesRes, applicationsRes, threadsRes] = await Promise.all([
       fetch("/api/private/company/jobs"),
       fetch("/api/private/company/candidates"),
+      fetch("/api/private/company/favorites"),
       fetch("/api/private/company/applications"),
       fetch("/api/private/messages"),
     ]);
@@ -268,6 +289,10 @@ export default function CompanyDashboardPage() {
     if (candidatesRes.ok) {
       const candidateData = (await candidatesRes.json()) as { results: CandidateSearchResult[] };
       setCandidates(candidateData.results ?? []);
+    }
+    if (favoritesRes.ok) {
+      const favoriteData = (await favoritesRes.json()) as { favorites: CompanyFavorite[] };
+      setFavorites(favoriteData.favorites ?? []);
     }
     if (applicationsRes.ok) {
       const appData = (await applicationsRes.json()) as { applications: CompanyApplication[] };
@@ -296,6 +321,23 @@ export default function CompanyDashboardPage() {
     }
     const data = (await response.json()) as { results: CandidateSearchResult[] };
     setCandidates(data.results ?? []);
+  }
+
+  async function toggleFavorite(candidate: CandidateSearchResult) {
+    const method = candidate.isFavorite ? "DELETE" : "POST";
+    const response = await fetch("/api/private/company/favorites", {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ candidateProfileId: candidate.id }),
+    });
+
+    if (!response.ok) {
+      setError("Favoriten konnten nicht aktualisiert werden.");
+      return;
+    }
+
+    await runCandidateSearch();
+    await refreshCompanyData();
   }
 
   async function saveProfile(requestVerification: boolean) {
@@ -535,11 +577,12 @@ export default function CompanyDashboardPage() {
       </section>
 
       <section className="mt-4 rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
-        <div className="grid gap-2 md:grid-cols-5">
+        <div className="grid gap-2 md:grid-cols-6">
           {[
+            { key: "candidates", label: "Suche" },
             { key: "applications", label: "Bewerbungen" },
+            { key: "favorites", label: "Favoriten" },
             { key: "messages", label: "Nachrichten" },
-            { key: "candidates", label: "Kandidaten" },
             { key: "jobs", label: "Offene Stellen" },
             { key: "profile", label: "Unternehmen" },
           ].map((tab) => (
@@ -732,7 +775,7 @@ export default function CompanyDashboardPage() {
       {activeTab === "candidates" ? (
         <section className="mt-4 space-y-4">
           <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
-            <h2 className="text-lg font-semibold">Kandidatensuche</h2>
+            <h2 className="text-lg font-semibold">Suche</h2>
             <form onSubmit={runCandidateSearch} className="mt-3 grid gap-3 md:grid-cols-4">
               <input
                 value={searchQuery}
@@ -794,9 +837,22 @@ export default function CompanyDashboardPage() {
                         </p>
                       </div>
                     </div>
-                    <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white">
-                      {candidate.visibility}
-                    </span>
+                    <div className="flex flex-col items-end gap-2">
+                      <span className="rounded-full bg-zinc-900 px-2.5 py-1 text-xs font-semibold text-white">
+                        {candidate.visibility}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void toggleFavorite(candidate)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${
+                          candidate.isFavorite
+                            ? "border-amber-300 bg-amber-50 text-amber-700"
+                            : "border-zinc-300 hover:bg-zinc-100"
+                        }`}
+                      >
+                        {candidate.isFavorite ? "Favorit entfernen" : "Zu Favoriten"}
+                      </button>
+                    </div>
                   </div>
                   <p className="mt-3 text-sm text-zinc-700">{candidate.summary ?? "Keine Zusammenfassung."}</p>
                   <p className="mt-2 text-xs text-zinc-500">Skills: {candidate.skills.join(", ") || "keine"}</p>
@@ -828,6 +884,75 @@ export default function CompanyDashboardPage() {
             ) : (
               <p className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-600">
                 Keine Kandidaten gefunden.
+              </p>
+            )}
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === "favorites" ? (
+        <section className="mt-4 space-y-4">
+          <article className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm">
+            <h2 className="text-lg font-semibold">Favoriten</h2>
+            <p className="mt-1 text-sm text-zinc-600">
+              Gespeicherte Kandidaten aus deiner Suche.
+            </p>
+          </article>
+          <div className="space-y-3">
+            {favorites.length ? (
+              favorites.map((favorite) => (
+                <article key={favorite.id} className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-zinc-200 text-sm font-semibold text-zinc-600">
+                        {favorite.avatarUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={favorite.avatarUrl} alt={favorite.name} className="h-full w-full object-cover" />
+                        ) : (
+                          <span>
+                            {favorite.name
+                              .split(" ")
+                              .map((part) => part.slice(0, 1))
+                              .join("")
+                              .slice(0, 2)}
+                          </span>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-base font-semibold">{favorite.name}</p>
+                        <p className="text-sm text-zinc-600">{favorite.headline ?? "Ohne Headline"}</p>
+                        <p className="mt-1 text-xs text-zinc-500">
+                          {favorite.location ?? "Standort offen"} · {favorite.experienceYears} Jahre
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-500">Skills: {favorite.skills.join(", ") || "keine"}</p>
+                  <div className="mt-3 grid gap-2 md:grid-cols-[1fr,140px]">
+                    <textarea
+                      value={candidateMessageDrafts[favorite.candidateId] ?? ""}
+                      onChange={(event) =>
+                        setCandidateMessageDrafts((current) => ({
+                          ...current,
+                          [favorite.candidateId]: event.target.value,
+                        }))
+                      }
+                      className="h-20 rounded-xl border border-zinc-300 px-3 py-2 text-sm outline-none ring-zinc-900/20 focus:ring-4"
+                      placeholder="Nachricht an Favorit..."
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void sendMessageToCandidate(favorite.candidateId)}
+                      className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+                    >
+                      Nachricht senden
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <p className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-600">
+                Noch keine Favoriten gespeichert.
               </p>
             )}
           </div>
